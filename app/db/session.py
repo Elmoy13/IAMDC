@@ -4,8 +4,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import settings
 
-# Supabase pooler requires SSL
+# Supabase Transaction Pooler uses a self-signed cert (PgBouncer inside AWS).
+# Traffic is still encrypted; we just skip chain validation.
 _ssl_ctx = ssl.create_default_context()
+_ssl_ctx.check_hostname = False
+_ssl_ctx.verify_mode = ssl.CERT_NONE
 
 engine = create_async_engine(
     settings.database_url,
