@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,7 +65,7 @@ async def handle_ai_reply(
     )
 
     # 5. Save AI message in DB
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     ai_message = Message(
         conversation_id=conversation_id,
         sender="ai",
@@ -109,7 +109,7 @@ async def send_manual_message(
     )
 
     # Save in DB
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     agent_message = Message(
         conversation_id=conversation_id,
         sender="agent",

@@ -29,7 +29,7 @@ class ChannelBrand(UUIDPrimaryKeyMixin, Base):
         JSON, nullable=True
     )
     created_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=False), server_default=func.now(), nullable=True
+        DateTime(timezone=True), server_default=func.now(), nullable=True
     )
 
     channel: Mapped["Channel"] = relationship(back_populates="channel_brands")

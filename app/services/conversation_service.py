@@ -1,7 +1,7 @@
 """Service layer for conversation UX endpoints."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import func, select, update
@@ -58,7 +58,7 @@ async def list_conversations_by_agency(
         last_msg = last_msg_result.scalar_one_or_none()
 
         # Unread count: customer messages after last_read_at
-        last_read = conv.last_read_at or datetime(1970, 1, 1)
+        last_read = conv.last_read_at or datetime(1970, 1, 1, tzinfo=timezone.utc)
         unread_q = select(func.count()).select_from(Message).where(
             Message.conversation_id == conv.id,
             Message.sender == "customer",
@@ -136,7 +136,7 @@ async def get_conversation_with_messages(
     total_messages = total_result.scalar() or 0
 
     # Mark as read
-    conversation.last_read_at = datetime.utcnow()
+    conversation.last_read_at = datetime.now(timezone.utc)
     await db.commit()
 
     contact = conversation.contact
@@ -212,7 +212,7 @@ async def send_agent_message(
     )
 
     # Save message
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     agent_message = Message(
         conversation_id=conversation_id,
         sender="agent",

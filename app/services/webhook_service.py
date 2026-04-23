@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -211,7 +211,7 @@ async def process_incoming_message(
     )
 
     # 5. Save the incoming message
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     incoming = Message(
         conversation_id=conversation.id,
         sender="customer",

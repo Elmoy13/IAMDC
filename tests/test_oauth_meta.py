@@ -298,7 +298,7 @@ async def test_oauth_callback_expired_state_returns_400(client):
         "user_id": "user-1",
         "agency_id": "agency-1",
         "brand_id": "brand-1",
-        "created_at": dt.datetime.utcnow() - dt.timedelta(seconds=9999),
+        "created_at": dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=9999),
     }
 
     resp = await client.get(

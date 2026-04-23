@@ -83,7 +83,7 @@ async def start_oauth(
         "user_id": user["user_id"],
         "agency_id": str(agency_id),
         "brand_id": str(brand_id),
-        "created_at": dt.datetime.utcnow(),
+        "created_at": dt.datetime.now(dt.timezone.utc),
     }
 
     authorize_url = meta_oauth.build_authorize_url(state=state)
@@ -121,7 +121,7 @@ async def oauth_callback(
     if not state_data:
         raise HTTPException(400, "Invalid or expired state")
 
-    age = (dt.datetime.utcnow() - state_data["created_at"]).total_seconds()
+    age = (dt.datetime.now(dt.timezone.utc) - state_data["created_at"]).total_seconds()
     if age > _STATE_TTL_SECONDS:
         raise HTTPException(400, "State expired")
 
@@ -153,7 +153,7 @@ async def oauth_callback(
         "pages": pages,
         "agency_id": state_data["agency_id"],
         "brand_id": state_data["brand_id"],
-        "created_at": dt.datetime.utcnow(),
+        "created_at": dt.datetime.now(dt.timezone.utc),
     }
 
     # Build safe redirect with only public page info (no tokens)
@@ -205,7 +205,7 @@ async def connect_channel(
         raise HTTPException(400, "OAuth session expired. Please start the flow again.")
 
     # TTL check on cached tokens
-    age = (dt.datetime.utcnow() - cached["created_at"]).total_seconds()
+    age = (dt.datetime.now(dt.timezone.utc) - cached["created_at"]).total_seconds()
     if age > _STATE_TTL_SECONDS:
         _oauth_states.pop(cache_key, None)
         raise HTTPException(400, "OAuth session expired. Please start the flow again.")

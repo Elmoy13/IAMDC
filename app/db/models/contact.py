@@ -21,7 +21,7 @@ class Contact(UUIDPrimaryKeyMixin, Base):
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     profile_picture_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=False), server_default=func.now(), nullable=True
+        DateTime(timezone=True), server_default=func.now(), nullable=True
     )
 
     conversations: Mapped[list["Conversation"]] = relationship(back_populates="contact")

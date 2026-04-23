@@ -20,7 +20,7 @@ class Message(UUIDPrimaryKeyMixin, Base):
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     ai_suggestion: Mapped[str | None] = mapped_column(Text, nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=False), server_default=func.now(), nullable=True
+        DateTime(timezone=True), server_default=func.now(), nullable=True
     )
 
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")

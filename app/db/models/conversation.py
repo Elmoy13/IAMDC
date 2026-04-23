@@ -23,8 +23,8 @@ class Conversation(UUIDPrimaryKeyMixin, Base):
     active_brand_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     status: Mapped[str | None] = mapped_column(Text, default="open", nullable=True)
     mode: Mapped[str | None] = mapped_column(Text, default="ai", nullable=True)
-    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
-    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     tags: Mapped[Any | None] = mapped_column(JSON, nullable=True, default=list)
 
     contact: Mapped["Contact"] = relationship(back_populates="conversations", lazy="selectin")

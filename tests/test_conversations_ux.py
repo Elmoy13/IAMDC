@@ -1,7 +1,7 @@
 """Tests for Sprint UX-1: Conversations UX endpoints."""
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
@@ -57,7 +57,7 @@ async def _seed_conversation(
         active_brand_id=brand_id,
         status=status,
         mode=mode,
-        last_message_at=datetime.utcnow(),
+        last_message_at=datetime.now(timezone.utc),
         last_read_at=last_read_at,
         tags=["soporte"],
     )
@@ -65,7 +65,7 @@ async def _seed_conversation(
     await db.flush()
 
     messages: list[Message] = []
-    base_time = datetime.utcnow() - timedelta(minutes=num_messages)
+    base_time = datetime.now(timezone.utc) - timedelta(minutes=num_messages)
     for i in range(num_messages):
         sender = "customer" if i % 2 == 0 else "ai"
         msg = Message(
