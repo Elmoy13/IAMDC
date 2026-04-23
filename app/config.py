@@ -21,6 +21,16 @@ class Settings(BaseSettings):
     # ── Meta / Facebook ──────────────────────────────────
     meta_verify_token: str
     meta_app_secret: str
+    meta_app_id: str = ""
+    meta_oauth_redirect_uri: str = "https://api.bacachitofeliz.org/api/v1/oauth/meta/callback"
+    meta_oauth_scopes: str = (
+        "pages_messaging,"
+        "pages_manage_metadata,"
+        "pages_show_list,"
+        "instagram_manage_messages,"
+        "business_management,"
+        "public_profile"
+    )
 
     # ── AI Provider toggle ───────────────────────────────
     ai_provider: str = "gemini"  # "gemini" | "bedrock"
