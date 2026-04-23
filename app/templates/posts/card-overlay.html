@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link href="https://fonts.googleapis.com/css2?family={{ font_family_url }}:wght@400;700;900&amp;display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: {{ width }}px;
+      height: {{ height }}px;
+      overflow: hidden;
+      font-family: '{{ font_family }}', 'Montserrat', sans-serif;
+    }
+    .canvas {
+      position: relative;
+      width: {{ width }}px;
+      height: {{ height }}px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .bg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      filter: blur(6px) brightness(0.65);
+      transform: scale(1.05);
+    }
+    .card {
+      position: relative;
+      width: 70%;
+      min-height: 50%;
+      background: #ffffff;
+      border-radius: {{ (width * 0.022) | int }}px;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+      padding: 56px 56px 48px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 0;
+    }
+    .logo {
+      max-height: 64px;
+      max-width: 160px;
+      object-fit: contain;
+      margin-bottom: 32px;
+    }
+    .logo-dot {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: {{ primary_color }};
+      margin-bottom: 32px;
+    }
+    .headline {
+      font-size: {{ (width * 0.052) | int }}px;
+      font-weight: 900;
+      color: #111;
+      line-height: 1.15;
+      margin-bottom: 16px;
+      letter-spacing: -0.4px;
+    }
+    .body {
+      font-size: {{ (width * 0.028) | int }}px;
+      font-weight: 400;
+      color: #555;
+      line-height: 1.6;
+      margin-bottom: 32px;
+    }
+    .cta {
+      margin-top: auto;
+      background: {{ primary_color }};
+      color: #fff;
+      font-size: {{ (width * 0.028) | int }}px;
+      font-weight: 700;
+      padding: 16px 40px;
+      border-radius: 8px;
+      letter-spacing: 0.3px;
+    }
+  </style>
+</head>
+<body>
+  <div class="canvas">
+    <img class="bg" src="{{ background_image | safe }}" alt="">
+    <div class="card">
+      {% if logo_url %}
+        <img class="logo" src="{{ logo_url | safe }}" alt="Logo">
+      {% else %}
+        <div class="logo-dot"></div>
+      {% endif %}
+      <div class="headline">{{ headline }}</div>
+      {% if body %}<div class="body">{{ body }}</div>{% endif %}
+      {% if cta %}<div class="cta">{{ cta }}</div>{% endif %}
+    </div>
+  </div>
+</body>
+</html>
