@@ -125,8 +125,22 @@ async def _get_or_create_conversation(
             Conversation.status == "open",
         )
     )
-    conversation = result.scalar_one_or_none()
-    if conversation:
+    convs = result.scalars().all()
+    if len(convs) == 1:
+        return convs[0]
+    if len(convs) > 1:
+        # Duplicates exist — keep the one with the most recent activity
+        conversation = min(
+            convs,
+            key=lambda c: (c.last_message_at or datetime.min, str(c.id)),
+        )
+        logger.warning(
+            "duplicate_conversations_detected",
+            count=len(convs),
+            contact_id=str(conversation.contact_id),
+            channel_id=str(conversation.channel_id),
+            keeping_id=str(conversation.id),
+        )
         return conversation
 
     conversation = Conversation(
