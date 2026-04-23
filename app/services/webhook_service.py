@@ -57,6 +57,7 @@ async def _get_or_create_contact(
     platform: str,
     platform_user_id: str,
     name: str | None = None,
+    page_access_token: str | None = None,
 ) -> Contact:
     """Find an existing contact or create a new one."""
     result = await db.execute(
@@ -79,6 +80,21 @@ async def _get_or_create_contact(
     )
     db.add(contact)
     await db.flush()
+
+    # Enrich new contact with profile picture from Graph API
+    if page_access_token:
+        try:
+            from app.providers import meta_graph
+            profile = await meta_graph.get_user_profile(
+                platform_user_id=platform_user_id,
+                page_access_token=page_access_token,
+            )
+            contact.name = profile.get("name") or contact.name
+            contact.profile_picture_url = profile.get("profile_pic")
+            await db.flush()
+        except Exception as exc:
+            logger.warning("contact_enrichment_failed", error=str(exc))
+
     return contact
 
 
@@ -142,12 +158,21 @@ async def process_incoming_message(
         active_brand = _resolve_active_brand(channel.channel_brands, message_text)
         active_brand_id = active_brand.brand_id
 
-    # 3. Get or create contact
+    # 3. Get or create contact (pass token for profile enrichment)
+    _page_token: str | None = None
+    if channel.access_token:
+        try:
+            from app.services.channel_service import get_channel_access_token
+            _page_token = await get_channel_access_token(db, channel.id)
+        except Exception:
+            _page_token = None
+
     contact = await _get_or_create_contact(
         db,
         agency_id=channel.agency_id,
         platform=channel.platform or "facebook",
         platform_user_id=sender_id,
+        page_access_token=_page_token,
     )
 
     # 4. Get or create conversation

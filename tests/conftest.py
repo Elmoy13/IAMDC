@@ -19,7 +19,7 @@ engine_test = create_async_engine(TEST_DATABASE_URL, echo=False)
 async_session_test = async_sessionmaker(engine_test, class_=AsyncSession, expire_on_commit=False)
 
 FAKE_USER_ID = str(uuid.uuid4())
-FAKE_AGENCY_ID = str(uuid.uuid4())
+FAKE_AGENCY_ID = "00000000-0000-4000-a000-000000000001"
 
 
 def _fake_current_user() -> dict:

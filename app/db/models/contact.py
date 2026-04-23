@@ -19,6 +19,7 @@ class Contact(UUIDPrimaryKeyMixin, Base):
     platform: Mapped[str | None] = mapped_column(Text, nullable=True)
     platform_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    profile_picture_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), server_default=func.now(), nullable=True
     )

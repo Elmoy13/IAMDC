@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import ForeignKey, Text, DateTime
+from sqlalchemy import ForeignKey, Text, DateTime, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, UUIDPrimaryKeyMixin
@@ -24,6 +24,8 @@ class Conversation(UUIDPrimaryKeyMixin, Base):
     status: Mapped[str | None] = mapped_column(Text, default="open", nullable=True)
     mode: Mapped[str | None] = mapped_column(Text, default="ai", nullable=True)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    tags: Mapped[Any | None] = mapped_column(JSON, nullable=True, default=list)
 
     contact: Mapped["Contact"] = relationship(back_populates="conversations", lazy="selectin")
     channel: Mapped["Channel"] = relationship(back_populates="conversations", lazy="selectin")
