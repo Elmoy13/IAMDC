@@ -55,6 +55,7 @@ async def test_send_message_forbids_other_agency(client: AsyncClient, db_session
     channel = Channel(
         agency_id=other_agency_id,
         user_id=uuid.uuid4(),
+        brand_id=uuid.uuid4(),
         platform="facebook",
         page_id="other_page",
         access_token="tok",

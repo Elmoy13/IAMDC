@@ -12,6 +12,7 @@ from app.db.models import Channel, Contact, Conversation, Message
 from tests.conftest import FAKE_AGENCY_ID
 
 OTHER_AGENCY_ID = str(uuid.uuid4())
+DEFAULT_BRAND_ID = uuid.uuid4()
 
 
 async def _seed_conversation(
@@ -25,6 +26,7 @@ async def _seed_conversation(
     last_read_at: datetime | None = None,
 ) -> tuple[Conversation, Contact, Channel, list[Message]]:
     """Create a conversation with contact, channel, and messages for testing."""
+    _brand = brand_id or DEFAULT_BRAND_ID
     contact = Contact(
         agency_id=uuid.UUID(agency_id),
         user_id=uuid.UUID(int=0),
@@ -39,6 +41,7 @@ async def _seed_conversation(
         channel = Channel(
             agency_id=uuid.UUID(agency_id),
             user_id=uuid.UUID(int=0),
+            brand_id=_brand,
             platform="facebook",
             page_id=f"page_{uuid.uuid4().hex[:8]}",
             access_token="test_token",
@@ -54,7 +57,6 @@ async def _seed_conversation(
         user_id=uuid.UUID(int=0),
         contact_id=contact.id,
         channel_id=channel.id,
-        active_brand_id=brand_id,
         status=status,
         mode=mode,
         last_message_at=datetime.now(timezone.utc),
@@ -93,12 +95,14 @@ async def test_list_conversations_returns_only_own_agency(
     await _seed_conversation(db_session, agency_id=FAKE_AGENCY_ID)
     await _seed_conversation(db_session, agency_id=OTHER_AGENCY_ID)
 
-    resp = await client.get(f"/api/v1/conversations/by-agency/{FAKE_AGENCY_ID}")
+    resp = await client.get(
+        f"/api/v1/conversations/by-agency/{FAKE_AGENCY_ID}",
+        params={"brand_id": str(DEFAULT_BRAND_ID)},
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) >= 1
     for item in data:
-        # All returned conversations belong to our agency (verified via the endpoint logic)
         assert "id" in item
 
 
@@ -107,7 +111,10 @@ async def test_list_conversations_other_agency_forbidden(
     client: AsyncClient, db_session: AsyncSession,
 ):
     """Trying to list conversations for another agency should return 403."""
-    resp = await client.get(f"/api/v1/conversations/by-agency/{OTHER_AGENCY_ID}")
+    resp = await client.get(
+        f"/api/v1/conversations/by-agency/{OTHER_AGENCY_ID}",
+        params={"brand_id": str(DEFAULT_BRAND_ID)},
+    )
     assert resp.status_code == 403
 
 
@@ -125,7 +132,7 @@ async def test_list_conversations_filters_by_status(
 
     resp = await client.get(
         f"/api/v1/conversations/by-agency/{FAKE_AGENCY_ID}",
-        params={"status": "closed"},
+        params={"status": "closed", "brand_id": str(DEFAULT_BRAND_ID)},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -167,7 +174,10 @@ async def test_list_conversations_includes_last_message_preview(
     """Response should include a preview of the last message."""
     await _seed_conversation(db_session, num_messages=5)
 
-    resp = await client.get(f"/api/v1/conversations/by-agency/{FAKE_AGENCY_ID}")
+    resp = await client.get(
+        f"/api/v1/conversations/by-agency/{FAKE_AGENCY_ID}",
+        params={"brand_id": str(DEFAULT_BRAND_ID)},
+    )
     assert resp.status_code == 200
     data = resp.json()
     found_preview = any(item.get("last_message_preview") for item in data)
@@ -187,7 +197,10 @@ async def test_list_conversations_calculates_unread_count(
     old_time = datetime(2020, 1, 1)
     await _seed_conversation(db_session, num_messages=6, last_read_at=old_time)
 
-    resp = await client.get(f"/api/v1/conversations/by-agency/{FAKE_AGENCY_ID}")
+    resp = await client.get(
+        f"/api/v1/conversations/by-agency/{FAKE_AGENCY_ID}",
+        params={"brand_id": str(DEFAULT_BRAND_ID)},
+    )
     assert resp.status_code == 200
     data = resp.json()
     # At least one conversation should have unread > 0

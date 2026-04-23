@@ -14,7 +14,7 @@ from app.services.channel_service import (
     create_channel_with_encrypted_token,
     delete_channel,
 )
-from app.db.models import Channel, ChannelBrand
+from app.db.models import Channel
 from sqlalchemy import select
 
 
@@ -49,6 +49,7 @@ def test_build_authorize_url_has_required_params():
     assert "state=abc123" in url
     assert "scope=" in url
     assert "response_type=code" in url
+    assert "auth_type=reauthenticate" in url
     assert url.startswith("https://www.facebook.com/v21.0/dialog/oauth?")
 
 
@@ -192,13 +193,8 @@ async def test_create_channel_with_encrypted_token_encrypts(db_session):
     assert channel.access_token_encrypted is True
     assert channel.access_token != plaintext_token  # stored encrypted
 
-    # Verify channel_brands was created
-    result = await db_session.execute(
-        select(ChannelBrand).where(ChannelBrand.channel_id == channel.id)
-    )
-    cb = result.scalar_one()
-    assert cb.brand_id == brand_id
-    assert cb.is_primary is True
+    # Verify brand_id was set on the channel
+    assert channel.brand_id == brand_id
 
 
 # ── 8. create_channel is idempotent ───────────────────────

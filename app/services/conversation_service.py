@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import ConversationNotFoundError
 from app.core.logging import get_logger
 from app.db.models.channel import Channel
-from app.db.models.channel_brand import ChannelBrand
 from app.db.models.contact import Contact
 from app.db.models.conversation import Conversation
 from app.db.models.message import Message
@@ -18,11 +17,13 @@ from app.db.models.message import Message
 logger = get_logger(__name__)
 
 
-def _build_active_brand(conv) -> dict | None:
-    """Build active_brand dict from conversation's active_brand_id."""
-    if not conv.active_brand_id:
+def _build_brand_from_channel(channel) -> dict | None:
+    """Build brand dict from channel.brand relationship."""
+    if not channel or not channel.brand_id:
         return None
-    return {"id": conv.active_brand_id, "name": str(conv.active_brand_id)}
+    brand = getattr(channel, "brand", None)
+    name = brand.name if brand and brand.name else str(channel.brand_id)
+    return {"id": channel.brand_id, "name": name}
 
 
 async def list_conversations_by_agency(
@@ -37,6 +38,7 @@ async def list_conversations_by_agency(
     """List conversations with summary (last message, unread, contact, channel)."""
     query = (
         select(Conversation)
+        .join(Channel, Conversation.channel_id == Channel.id)
         .where(
             Conversation.agency_id == agency_id,
             Conversation.status == status,
@@ -47,7 +49,7 @@ async def list_conversations_by_agency(
     )
 
     if brand_id is not None:
-        query = query.where(Conversation.active_brand_id == brand_id)
+        query = query.where(Channel.brand_id == brand_id)
     if channel_id is not None:
         query = query.where(Conversation.channel_id == channel_id)
 
@@ -99,7 +101,7 @@ async def list_conversations_by_agency(
                 "page_id": channel.page_id,
                 "page_name": None,
             },
-            "active_brand": _build_active_brand(conv),
+            "active_brand": _build_brand_from_channel(channel),
             "tags": conv.tags if conv.tags else [],
         })
 
@@ -167,7 +169,7 @@ async def get_conversation_with_messages(
             "page_id": channel.page_id,
             "page_name": None,
         },
-        "active_brand": _build_active_brand(conversation),
+        "active_brand": _build_brand_from_channel(channel),
         "messages": [
             {
                 "id": m.id,

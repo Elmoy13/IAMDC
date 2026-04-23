@@ -43,11 +43,13 @@ async def test_webhook_resolves_agency_from_channel(client: AsyncClient, db_sess
     from sqlalchemy import select
 
     agency_id = uuid.uuid4()
+    brand_id = uuid.uuid4()
     page_id = "page_test_agency"
 
     channel = Channel(
         agency_id=agency_id,
         user_id=uuid.uuid4(),
+        brand_id=brand_id,
         platform="facebook",
         page_id=page_id,
         access_token="test_token",
@@ -94,9 +96,9 @@ async def test_webhook_resolves_agency_from_channel(client: AsyncClient, db_sess
 
 
 @pytest.mark.asyncio
-async def test_webhook_routes_to_active_brand_1_to_1(client: AsyncClient, db_session):
-    """With one brand tied to channel, active_brand_id should match."""
-    from app.db.models import Channel, ChannelBrand, Conversation
+async def test_webhook_creates_conversation_with_brand_from_channel(client: AsyncClient, db_session):
+    """Conversation brand_id should come from channel.brand_id (trivial routing)."""
+    from app.db.models import Channel, Conversation
     from sqlalchemy import select
 
     agency_id = uuid.uuid4()
@@ -106,20 +108,12 @@ async def test_webhook_routes_to_active_brand_1_to_1(client: AsyncClient, db_ses
     channel = Channel(
         agency_id=agency_id,
         user_id=uuid.uuid4(),
+        brand_id=brand_id,
         platform="facebook",
         page_id=page_id,
         access_token="tok",
     )
     db_session.add(channel)
-    await db_session.flush()
-
-    cb = ChannelBrand(
-        channel_id=channel.id,
-        brand_id=brand_id,
-        is_primary=True,
-        priority=1,
-    )
-    db_session.add(cb)
     await db_session.commit()
 
     payload = {
@@ -146,132 +140,5 @@ async def test_webhook_routes_to_active_brand_1_to_1(client: AsyncClient, db_ses
         select(Conversation).where(Conversation.channel_id == channel.id)
     )
     conv = result.scalar_one()
-    assert conv.active_brand_id == brand_id
-
-
-@pytest.mark.asyncio
-async def test_webhook_routes_to_brand_by_keyword(client: AsyncClient, db_session):
-    """With multiple brands, keyword match should select the correct brand."""
-    from app.db.models import Channel, ChannelBrand, Conversation
-    from sqlalchemy import select
-
-    agency_id = uuid.uuid4()
-    brand_a = uuid.uuid4()
-    brand_b = uuid.uuid4()
-    page_id = "page_kw"
-
-    channel = Channel(
-        agency_id=agency_id,
-        user_id=uuid.uuid4(),
-        platform="facebook",
-        page_id=page_id,
-        access_token="tok",
-    )
-    db_session.add(channel)
-    await db_session.flush()
-
-    cb_a = ChannelBrand(
-        channel_id=channel.id,
-        brand_id=brand_a,
-        is_primary=False,
-        priority=1,
-        trigger_keywords=["pizza", "pasta"],
-    )
-    cb_b = ChannelBrand(
-        channel_id=channel.id,
-        brand_id=brand_b,
-        is_primary=True,
-        priority=2,
-    )
-    db_session.add_all([cb_a, cb_b])
-    await db_session.commit()
-
-    payload = {
-        "object": "page",
-        "entry": [
-            {
-                "id": page_id,
-                "time": 1,
-                "messaging": [
-                    {
-                        "sender": {"id": "s_kw"},
-                        "recipient": {"id": page_id},
-                        "message": {"text": "quiero una pizza grande"},
-                    }
-                ],
-            }
-        ],
-    }
-
-    response = await client.post("/api/v1/webhook/meta", json=payload)
-    assert response.status_code == 200
-
-    result = await db_session.execute(
-        select(Conversation).where(Conversation.channel_id == channel.id)
-    )
-    conv = result.scalar_one()
-    assert conv.active_brand_id == brand_a
-
-
-@pytest.mark.asyncio
-async def test_webhook_routes_to_primary_no_match(client: AsyncClient, db_session):
-    """Without keyword match, should fall back to primary brand."""
-    from app.db.models import Channel, ChannelBrand, Conversation
-    from sqlalchemy import select
-
-    agency_id = uuid.uuid4()
-    brand_a = uuid.uuid4()
-    brand_b = uuid.uuid4()
-    page_id = "page_primary"
-
-    channel = Channel(
-        agency_id=agency_id,
-        user_id=uuid.uuid4(),
-        platform="facebook",
-        page_id=page_id,
-        access_token="tok",
-    )
-    db_session.add(channel)
-    await db_session.flush()
-
-    cb_a = ChannelBrand(
-        channel_id=channel.id,
-        brand_id=brand_a,
-        is_primary=False,
-        priority=1,
-        trigger_keywords=["pizza"],
-    )
-    cb_b = ChannelBrand(
-        channel_id=channel.id,
-        brand_id=brand_b,
-        is_primary=True,
-        priority=2,
-    )
-    db_session.add_all([cb_a, cb_b])
-    await db_session.commit()
-
-    payload = {
-        "object": "page",
-        "entry": [
-            {
-                "id": page_id,
-                "time": 1,
-                "messaging": [
-                    {
-                        "sender": {"id": "s_nokey"},
-                        "recipient": {"id": page_id},
-                        "message": {"text": "hola, quiero información"},
-                    }
-                ],
-            }
-        ],
-    }
-
-    response = await client.post("/api/v1/webhook/meta", json=payload)
-    assert response.status_code == 200
-
-    result = await db_session.execute(
-        select(Conversation).where(Conversation.channel_id == channel.id)
-    )
-    conv = result.scalar_one()
-    assert conv.active_brand_id == brand_b
+    # Brand comes from channel, not from conversation.active_brand_id
+    assert conv.channel_id == channel.id

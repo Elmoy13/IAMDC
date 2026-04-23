@@ -2,15 +2,14 @@
 
 import uuid
 
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.core.encryption import decrypt_secret, encrypt_secret
 from app.core.exceptions import ChannelNotFoundError
 from app.core.logging import get_logger
-from app.db.models import Channel, ChannelBrand
+from app.db.models import Channel
 
 logger = get_logger(__name__)
 
@@ -51,16 +50,16 @@ async def create_channel_with_encrypted_token(
     page_name: str,
     page_access_token: str,
     brand_id: uuid.UUID,
-    is_primary: bool = True,
 ) -> Channel:
-    """Create a channel with an encrypted token and link it to a brand.
+    """Create a channel with an encrypted token linked to a single brand.
 
-    Idempotent: if a channel already exists for the same ``page_id`` in the
-    agency, its token is refreshed and the existing row is returned.
+    Idempotent: if a channel already exists for the same ``brand_id``,
+    ``platform``, and ``page_id``, its token is refreshed and the existing
+    row is returned.
     """
     result = await db.execute(
         select(Channel).where(
-            Channel.agency_id == agency_id,
+            Channel.brand_id == brand_id,
             Channel.platform == platform,
             Channel.page_id == page_id,
         )
@@ -76,21 +75,13 @@ async def create_channel_with_encrypted_token(
     channel = Channel(
         agency_id=agency_id,
         user_id=user_id,
+        brand_id=brand_id,
         platform=platform,
         page_id=page_id,
         access_token=encrypt_secret(page_access_token),
         access_token_encrypted=True,
     )
     db.add(channel)
-    await db.flush()
-
-    channel_brand = ChannelBrand(
-        channel_id=channel.id,
-        brand_id=brand_id,
-        is_primary=is_primary,
-        priority=1,
-    )
-    db.add(channel_brand)
     await db.commit()
     await db.refresh(channel)
 
@@ -100,12 +91,14 @@ async def create_channel_with_encrypted_token(
 async def list_channels_by_agency(
     db: AsyncSession,
     agency_id: uuid.UUID,
+    brand_id: uuid.UUID,
 ) -> list[dict]:
-    """List channels for an agency with their associated brands."""
+    """List channels for an agency filtered by brand."""
     result = await db.execute(
-        select(Channel)
-        .where(Channel.agency_id == agency_id)
-        .options(selectinload(Channel.channel_brands))
+        select(Channel).where(
+            Channel.agency_id == agency_id,
+            Channel.brand_id == brand_id,
+        )
     )
     channels = result.scalars().all()
 
@@ -115,10 +108,10 @@ async def list_channels_by_agency(
             "platform": c.platform,
             "page_id": c.page_id,
             "created_at": c.created_at.isoformat() if c.created_at else None,
-            "brands": [
-                {"brand_id": str(cb.brand_id), "is_primary": cb.is_primary}
-                for cb in c.channel_brands
-            ],
+            "brand": {
+                "id": str(c.brand_id),
+                "name": c.brand.name if c.brand and c.brand.name else str(c.brand_id),
+            },
         }
         for c in channels
     ]
@@ -160,102 +153,3 @@ async def delete_channel(
 
     await db.delete(channel)
     await db.commit()
-
-
-async def list_channel_brands(
-    db: AsyncSession,
-    channel_id: uuid.UUID,
-    agency_id: uuid.UUID,
-) -> list[dict]:
-    """List brands for a channel, ordered by priority."""
-    # Verify channel belongs to agency
-    result = await db.execute(
-        select(Channel).where(
-            Channel.id == channel_id,
-            Channel.agency_id == agency_id,
-        )
-    )
-    if not result.scalar_one_or_none():
-        raise ChannelNotFoundError(
-            detail=f"Channel {channel_id} not found in agency {agency_id}"
-        )
-
-    result = await db.execute(
-        select(ChannelBrand)
-        .where(ChannelBrand.channel_id == channel_id)
-        .order_by(ChannelBrand.priority)
-    )
-    brands = result.scalars().all()
-
-    return [
-        {
-            "id": str(cb.id),
-            "channel_id": str(cb.channel_id),
-            "brand_id": str(cb.brand_id),
-            "is_primary": cb.is_primary,
-            "priority": cb.priority,
-            "trigger_keywords": cb.trigger_keywords,
-        }
-        for cb in brands
-    ]
-
-
-async def replace_channel_brands(
-    db: AsyncSession,
-    channel_id: uuid.UUID,
-    agency_id: uuid.UUID,
-    brands: list,
-) -> list[dict]:
-    """Atomic delete+insert of channel brand assignments."""
-    # Verify channel belongs to agency
-    result = await db.execute(
-        select(Channel).where(
-            Channel.id == channel_id,
-            Channel.agency_id == agency_id,
-        )
-    )
-    if not result.scalar_one_or_none():
-        raise ChannelNotFoundError(
-            detail=f"Channel {channel_id} not found in agency {agency_id}"
-        )
-
-    # Delete existing
-    await db.execute(
-        sa_delete(ChannelBrand).where(ChannelBrand.channel_id == channel_id)
-    )
-
-    # Insert new
-    new_brands: list[ChannelBrand] = []
-    for b in brands:
-        # Normalize keywords
-        keywords = None
-        if b.trigger_keywords:
-            keywords = list({kw.strip().lower() for kw in b.trigger_keywords if kw.strip()})
-
-        cb = ChannelBrand(
-            channel_id=channel_id,
-            brand_id=uuid.UUID(b.brand_id),
-            is_primary=b.is_primary,
-            priority=b.priority,
-            trigger_keywords=keywords,
-        )
-        db.add(cb)
-        new_brands.append(cb)
-
-    await db.commit()
-
-    # Refresh to get generated IDs
-    for cb in new_brands:
-        await db.refresh(cb)
-
-    return [
-        {
-            "id": str(cb.id),
-            "channel_id": str(cb.channel_id),
-            "brand_id": str(cb.brand_id),
-            "is_primary": cb.is_primary,
-            "priority": cb.priority,
-            "trigger_keywords": cb.trigger_keywords,
-        }
-        for cb in new_brands
-    ]

@@ -30,6 +30,7 @@ def build_authorize_url(state: str) -> str:
         "state": state,
         "scope": settings.meta_oauth_scopes,
         "response_type": "code",
+        "auth_type": "reauthenticate",
     }
     return f"https://www.facebook.com/v21.0/dialog/oauth?{urlencode(params)}"
 

@@ -4,11 +4,10 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import ChannelNotFoundError
 from app.core.logging import get_logger
-from app.db.models import Channel, ChannelBrand, Contact, Conversation, Message
+from app.db.models import Channel, Contact, Conversation, Message
 
 logger = get_logger(__name__)
 
@@ -19,38 +18,7 @@ class IncomingMessageResult:
     message_text: str
     mode: str
     agency_id: uuid.UUID
-    active_brand_id: uuid.UUID | None
-
-
-def _resolve_active_brand(
-    channel_brands: list[ChannelBrand],
-    message_text: str,
-) -> tuple[ChannelBrand, str]:
-    """Resolve which brand responds when there are multiple.
-
-    Strategy:
-    1. Single brand → that one
-    2. Multiple with trigger_keywords → first match by priority
-    3. No match → primary (is_primary=True)
-    4. Fallback → lowest priority number
-
-    Returns (ChannelBrand, routing_reason).
-    """
-    if len(channel_brands) == 1:
-        return channel_brands[0], "single_brand"
-
-    text_lower = message_text.lower()
-    for cb in sorted(channel_brands, key=lambda x: x.priority):
-        if cb.trigger_keywords:
-            for keyword in cb.trigger_keywords:
-                if keyword.lower() in text_lower:
-                    return cb, f"keyword_match:{keyword}"
-
-    for cb in channel_brands:
-        if cb.is_primary:
-            return cb, "is_primary"
-
-    return sorted(channel_brands, key=lambda x: x.priority)[0], "lowest_priority"
+    brand_id: uuid.UUID | None
 
 
 async def _get_or_create_contact(
@@ -117,7 +85,6 @@ async def _get_or_create_conversation(
     agency_id: uuid.UUID,
     contact_id: uuid.UUID,
     channel_id: uuid.UUID,
-    active_brand_id: uuid.UUID | None,
 ) -> Conversation:
     """Find an open conversation or create a new one."""
     result = await db.execute(
@@ -150,7 +117,6 @@ async def _get_or_create_conversation(
         user_id=uuid.UUID(int=0),  # Legacy field
         contact_id=contact_id,
         channel_id=channel_id,
-        active_brand_id=active_brand_id,
         status="open",
         mode="ai",
     )
@@ -168,24 +134,18 @@ async def process_incoming_message(
     """Process an incoming message from Meta.
 
     Returns IncomingMessageResult with conversation_id, message_text, mode,
-    agency_id, and active_brand_id for downstream AI reply.
+    agency_id, and brand_id (from channel.brand_id) for downstream AI reply.
     """
-    # 1. Find the channel by page_id, eagerly load brands
+    # 1. Find the channel by page_id
     result = await db.execute(
-        select(Channel)
-        .where(Channel.page_id == page_id)
-        .options(selectinload(Channel.channel_brands))
+        select(Channel).where(Channel.page_id == page_id)
     )
     channel = result.scalar_one_or_none()
     if not channel:
         raise ChannelNotFoundError(detail=f"No channel found for page_id={page_id}")
 
-    # 2. Resolve active brand
-    active_brand_id: uuid.UUID | None = None
-    routing_reason = "no_brands"
-    if channel.channel_brands:
-        resolved_brand, routing_reason = _resolve_active_brand(channel.channel_brands, message_text)
-        active_brand_id = resolved_brand.brand_id
+    # 2. Brand is always channel.brand_id (trivial, no routing)
+    brand_id: uuid.UUID = channel.brand_id
 
     # 3. Get or create contact (pass token for profile enrichment)
     _page_token: str | None = None
@@ -210,30 +170,7 @@ async def process_incoming_message(
         agency_id=channel.agency_id,
         contact_id=contact.id,
         channel_id=channel.id,
-        active_brand_id=active_brand_id,
     )
-
-    # 4b. Brand context preservation: if conversation already has a valid brand, keep it
-    if conversation.active_brand_id and channel.channel_brands:
-        valid_brand_ids = {cb.brand_id for cb in channel.channel_brands}
-        if conversation.active_brand_id in valid_brand_ids:
-            active_brand_id = conversation.active_brand_id
-            routing_reason = "context_preserved"
-        else:
-            # Existing brand no longer linked — update to newly resolved brand
-            if active_brand_id:
-                await db.execute(
-                    update(Conversation)
-                    .where(Conversation.id == conversation.id)
-                    .values(active_brand_id=active_brand_id)
-                )
-    elif active_brand_id and not conversation.active_brand_id:
-        # New conversation — set the resolved brand
-        await db.execute(
-            update(Conversation)
-            .where(Conversation.id == conversation.id)
-            .values(active_brand_id=active_brand_id)
-        )
 
     # 5. Save the incoming message
     now = datetime.now(timezone.utc)
@@ -260,13 +197,12 @@ async def process_incoming_message(
         sender_id=sender_id,
         mode=conversation.mode,
         agency_id=str(channel.agency_id),
-        active_brand_id=str(active_brand_id) if active_brand_id else None,
-        routing_reason=routing_reason,
+        brand_id=str(brand_id),
     )
     return IncomingMessageResult(
         conversation_id=conversation.id,
         message_text=message_text,
         mode=conversation.mode or "ai",
         agency_id=channel.agency_id,
-        active_brand_id=active_brand_id,
+        brand_id=brand_id,
     )
