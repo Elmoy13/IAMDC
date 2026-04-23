@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     environment: str = "development"
     allowed_origins: str = "http://localhost:5173,http://localhost:3000"
+    frontend_url: str = "https://app.bacachitofeliz.org"
 
 
 settings = Settings()  # type: ignore[call-arg]

@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
+from app.config import settings
 from app.core.logging import get_logger
 from app.middleware.auth import get_current_user, get_user_agency
 from app.services import meta_oauth
@@ -108,7 +109,7 @@ async def oauth_callback(
     if error:
         logger.warning("oauth_user_cancelled", error=error, desc=error_description)
         return RedirectResponse(
-            url=f"https://bacachitofeliz.org/settings/channels?oauth_error={error}",
+            url=f"{settings.frontend_url}/settings/channels?oauth_error={error}",
             status_code=302,
         )
 
@@ -168,7 +169,7 @@ async def oauth_callback(
 
     pages_encoded = quote(json.dumps(pages_public))
     redirect_url = (
-        f"https://bacachitofeliz.org/settings/channels/select"
+        f"{settings.frontend_url}/settings/channels/select"
         f"?agency_id={state_data['agency_id']}"
         f"&brand_id={state_data['brand_id']}"
         f"&pages={pages_encoded}"
