@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.core.logging import get_logger
 from app.middleware.auth import get_user_agency
 from app.schemas.draft import CreateDraftRequest, UpdateDraftRequest
+from app.services import supabase_client
 from app.services.supabase_client import get_client
 
 logger = get_logger(__name__)
@@ -145,3 +146,54 @@ async def delete_draft(
 
     client.table("parrilla_drafts").delete().eq("id", draft_id).execute()
     logger.info("draft_deleted", draft_id=draft_id)
+
+
+# ---------------------------------------------------------------------------
+# GET /drafts/{draft_id}/posts — list all posts associated with a draft
+# ---------------------------------------------------------------------------
+
+@router.get("/{draft_id}/posts")
+async def get_draft_posts(
+    draft_id: str,
+    agency: dict = Depends(get_user_agency),
+) -> dict:
+    """Return the draft, its generation jobs, and all associated posts.
+
+    This performs the join across parrilla_drafts → generation_jobs →
+    generated_posts so the frontend doesn't have to do it manually.
+    """
+    # 1. Verify draft exists and belongs to the user's agency
+    draft = await supabase_client.get_draft(draft_id)
+    if not draft or draft.get("agency_id") != agency["agency_id"]:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    # 2. Fetch all jobs linked to this draft (may be multiple regenerations)
+    jobs = await supabase_client.list_jobs_by_draft(draft_id)
+
+    # 3. Fetch all posts across those jobs
+    job_ids = [j["id"] for j in jobs]
+    posts = await supabase_client.list_posts_by_job_ids(job_ids)
+
+    return {
+        "draft": {
+            "id": draft["id"],
+            "status": draft.get("status"),
+            "brand_id": draft.get("brand_id"),
+            "title": draft.get("title"),
+            "config": draft.get("config"),
+            "chat_messages": draft.get("chat_messages"),
+            "selected_product_ids": draft.get("selected_product_ids"),
+        },
+        "jobs": [
+            {
+                "id": j["id"],
+                "status": j["status"],
+                "total_posts": j["total_posts"],
+                "completed_posts": j.get("completed_posts"),
+                "language": j.get("language"),
+                "created_at": j.get("created_at"),
+            }
+            for j in jobs
+        ],
+        "posts": posts,
+    }

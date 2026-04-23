@@ -55,10 +55,18 @@ class PostPipeline:
             # Enrich context from Supabase if brand/draft IDs available
             logo_analysis = payload.logo_analysis
             product_analysis = payload.product_analysis
+
+            # Resolve brand_id from draft if available
+            brand_id = None
+            if payload.draft_id:
+                draft = await supabase_client.get_draft(payload.draft_id)
+                if draft:
+                    brand_id = draft.get("brand_id")
+
             if payload.draft_id or not logo_analysis:
                 brand_ctx, pa_enriched, _products = (
                     await content_generator.enrich_context_from_supabase(
-                        brand_id=None,
+                        brand_id=brand_id,
                         draft_id=payload.draft_id,
                     )
                 )
@@ -87,6 +95,7 @@ class PostPipeline:
             )
 
             completed = 0
+            success_count = 0
             for idx, _config in enumerate(payload.posts_config):
                 post_id = post_ids[idx]
                 try:
@@ -110,6 +119,7 @@ class PostPipeline:
                         base_image_url="",
                         change_scope="initial_copy",
                     )
+                    success_count += 1
                 except Exception as exc:
                     logger.error("copy_post_failed", index=idx, post_id=post_id, error=str(exc))
                     await supabase_client.update_post_error(post_id, str(exc))
@@ -117,7 +127,15 @@ class PostPipeline:
                 completed += 1
                 await supabase_client.update_job_progress(job_id, completed)
 
-            await supabase_client.complete_job(job_id)
+            if success_count == 0:
+                await supabase_client.fail_job(
+                    job_id,
+                    "All posts failed to generate. Check logs for details.",
+                )
+                if payload.draft_id:
+                    await supabase_client.update_draft_status(payload.draft_id, "failed")
+            else:
+                await supabase_client.complete_job(job_id)
 
         except Exception as exc:
             logger.error("copy_batch_failed", job_id=job_id, error=str(exc))

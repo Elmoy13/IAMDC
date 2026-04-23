@@ -438,7 +438,6 @@ async def start_generation(
 
     # Handle draft linkage
     draft_id = payload.draft_id
-    draft_config: dict | None = None
     if draft_id:
         try:
             client = supabase_client.get_client()
@@ -451,13 +450,26 @@ async def start_generation(
                 .execute()
             )
             if draft_result.data:
-                draft_config = draft_result.data.get("config")
                 client.table("parrilla_drafts").update({
                     "status": "generating",
                 }).eq("id", draft_id).execute()
         except Exception as exc:
-            logger.warning("draft_link_failed", draft_id=draft_id, error=str(exc))
-            draft_id = None
+            logger.error("draft_link_failed", draft_id=draft_id, error=str(exc))
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to link draft {draft_id}. Please retry or create a new draft.",
+            )
+
+    # Always persist the full payload as job config so the approve endpoint
+    # has brand/product context even if the draft is stale or missing.
+    job_config = {
+        "brand": payload.brand.model_dump(),
+        "campaign": payload.campaign.model_dump(),
+        "product_images": payload.product_images or [],
+        "include_logo_in_image": payload.include_logo_in_image,
+        "include_text_in_image": payload.include_text_in_image,
+        "language": payload.language,
+    }
 
     # Create job in Supabase
     job_id = await supabase_client.create_job(
@@ -467,7 +479,7 @@ async def start_generation(
         language=lang,
         agency_id=agency["agency_id"],
         draft_id=draft_id,
-        config=draft_config,
+        config=job_config,
     )
 
     # Create placeholder rows for each post
@@ -526,7 +538,6 @@ async def generate_copy_only(
 
     # Handle draft linkage
     draft_id = payload.draft_id
-    draft_config: dict | None = None
     if draft_id:
         try:
             client = supabase_client.get_client()
@@ -539,13 +550,26 @@ async def generate_copy_only(
                 .execute()
             )
             if draft_result.data:
-                draft_config = draft_result.data.get("config")
                 client.table("parrilla_drafts").update({
                     "status": "generating",
                 }).eq("id", draft_id).execute()
         except Exception as exc:
-            logger.warning("draft_link_failed", draft_id=draft_id, error=str(exc))
-            draft_id = None
+            logger.error("draft_link_failed", draft_id=draft_id, error=str(exc))
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to link draft {draft_id}. Please retry or create a new draft.",
+            )
+
+    # Always persist the full payload as job config so the approve endpoint
+    # has brand/product context even if the draft is stale or missing.
+    job_config = {
+        "brand": payload.brand.model_dump(),
+        "campaign": payload.campaign.model_dump(),
+        "product_images": payload.product_images or [],
+        "include_logo_in_image": payload.include_logo_in_image,
+        "include_text_in_image": payload.include_text_in_image,
+        "language": payload.language,
+    }
 
     # Create job in Supabase
     job_id = await supabase_client.create_job(
@@ -555,7 +579,7 @@ async def generate_copy_only(
         language=lang,
         agency_id=agency["agency_id"],
         draft_id=draft_id,
-        config=draft_config,
+        config=job_config,
     )
 
     # Create placeholder rows
@@ -707,161 +731,6 @@ async def get_job_status(
             detail=f"Job not found: {exc}",
         )
     return JobStatusResponse(**result)
-
-
-# ---------------------------------------------------------------------------
-# Background worker
-# ---------------------------------------------------------------------------
-
-async def _generate_posts_background(
-    job_id: str,
-    post_ids: list[str],
-    payload: SmartBatchRenderRequest,
-    language: str = "es",
-) -> None:
-    """Generate all posts in background, saving each to Supabase as it finishes."""
-    try:
-        # Prepare product image data URLs
-        product_image_urls: list[str] = []
-        for img_b64 in payload.product_images:
-            data_url = await upload_image_to_fal(img_b64)
-            product_image_urls.append(data_url)
-
-        use_flux = bool(product_image_urls)
-
-        # Enrich context from Supabase if brand/draft IDs are available
-        logo_analysis = payload.logo_analysis
-        product_analysis = payload.product_analysis
-        if payload.draft_id or not logo_analysis:
-            brand_ctx, pa_enriched, _products = await content_generator.enrich_context_from_supabase(
-                brand_id=None,  # brand_id not on payload directly; extracted from draft
-                draft_id=payload.draft_id,
-            )
-            # Use persisted vision_analysis as logo_analysis fallback
-            if not logo_analysis and brand_ctx.get("vision_analysis"):
-                logo_analysis = brand_ctx["vision_analysis"]
-            if not product_analysis and pa_enriched:
-                product_analysis = pa_enriched
-
-        # Generate content with a single LLM call
-        post_contents = await content_generator.generate_post_content(
-            brand_name=payload.brand.name,
-            campaign_description=payload.campaign.description,
-            tone=payload.campaign.tone,
-            extras=payload.campaign.extras,
-            platform=payload.posts_config[0].platform,
-            format=payload.posts_config[0].format,
-            num_posts=len(payload.posts_config),
-            brand_colors={
-                "primary": payload.brand.primary_color,
-                "secondary": payload.brand.secondary_color,
-                "accent": payload.brand.accent_color,
-            },
-            logo_analysis=logo_analysis,
-            product_analysis=product_analysis,
-            language=language,
-        )
-
-        completed = 0
-
-        for idx, config in enumerate(payload.posts_config):
-            post_id = post_ids[idx]
-            try:
-                content = post_contents[idx]
-                aspect_ratio = _FORMAT_ASPECT_RATIO.get(config.format, "1:1")
-
-                # Generate image with Flux or Vertex AI
-                base_image_url_for_version = ""
-                if use_flux:
-                    product_url = product_image_urls[idx % len(product_image_urls)]
-
-                    # Step 1: Flux Kontext Pro — product in scene (clean, no logo/text)
-                    flux_image_url = await generate_image_with_reference(
-                        prompt=content["image_prompt"],
-                        reference_image_url=product_url,
-                        aspect_ratio=aspect_ratio,
-                    )
-
-                    # Save base image (pre-overlays) to storage
-                    base_b64 = await download_image_as_base64(flux_image_url)
-                    base_filename = f"{job_id}/{post_id}_base.png"
-                    base_image_url_for_version = await supabase_client.upload_image_to_storage(
-                        base_b64, base_filename,
-                    )
-
-                    # Step 2: Nano Banana 2 Edit — add logo and/or text if requested
-                    if payload.include_logo_in_image or payload.include_text_in_image:
-                        logo_url = None
-                        if payload.include_logo_in_image and (payload.brand.logo_b64 or ""):
-                            logo_url = await upload_image_to_fal(payload.brand.logo_b64)
-
-                        enhanced_url = await nano_banana.enhance_post_image(
-                            base_image_url=flux_image_url,
-                            logo_url=logo_url,
-                            headline=content["headline"] if payload.include_text_in_image else None,
-                            cta=content["cta"] if payload.include_text_in_image else None,
-                            brand_colors={
-                                "primary_color": payload.brand.primary_color,
-                                "secondary_color": payload.brand.secondary_color,
-                            },
-                            include_logo=payload.include_logo_in_image,
-                            include_text=payload.include_text_in_image,
-                            language=language,
-                        )
-                        image_b64 = await download_image_as_base64(enhanced_url)
-                    else:
-                        image_b64 = base_b64
-                else:
-                    image_b64 = await vertex_imagen.generate_image(
-                        enrich_image_prompt(content["image_prompt"])
-                    )
-
-                # Upload directly to Supabase Storage — no HTML template, no Playwright
-                filename = f"{job_id}/{post_id}.png"
-                image_url = await supabase_client.upload_image_to_storage(
-                    image_b64, filename,
-                )
-
-                # Mark post as success
-                await supabase_client.update_post_success(
-                    post_id=post_id,
-                    headline=content["headline"],
-                    body=content["body"],
-                    cta=content["cta"],
-                    image_prompt=content["image_prompt"],
-                    image_url=image_url,
-                )
-
-                # Save base_image_url and create version 1
-                if base_image_url_for_version:
-                    await supabase_client.update_post_fields(post_id, {
-                        "base_image_url": base_image_url_for_version,
-                    })
-
-                await supabase_client.create_post_version(
-                    post_id=post_id,
-                    version_number=1,
-                    headline=content["headline"],
-                    body=content["body"],
-                    cta=content["cta"],
-                    image_prompt=content["image_prompt"],
-                    rendered_image_url=image_url,
-                    base_image_url=base_image_url_for_version,
-                    change_scope="initial",
-                )
-
-            except Exception as exc:
-                logger.error("bg_post_failed", index=idx, error=str(exc))
-                await supabase_client.update_post_error(post_id, str(exc))
-
-            completed += 1
-            await supabase_client.update_job_progress(job_id, completed)
-
-        await supabase_client.complete_job(job_id)
-
-    except Exception as exc:
-        logger.error("bg_job_failed", job_id=job_id, error=str(exc))
-        await supabase_client.fail_job(job_id, str(exc))
 
 
 # ---------------------------------------------------------------------------

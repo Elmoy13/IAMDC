@@ -444,3 +444,52 @@ async def get_job(job_id: str) -> dict | None:
         .execute()
     )
     return result.data
+
+
+async def get_draft(draft_id: str) -> dict | None:
+    """Fetch a single draft by ID."""
+    client = get_client()
+    result = (
+        client.table("parrilla_drafts")
+        .select("*")
+        .eq("id", draft_id)
+        .maybe_single()
+        .execute()
+    )
+    return result.data
+
+
+async def list_jobs_by_draft(draft_id: str) -> list[dict]:
+    """Return all generation jobs linked to a draft, newest first."""
+    client = get_client()
+    result = (
+        client.table("generation_jobs")
+        .select("*")
+        .eq("draft_id", draft_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return result.data
+
+
+async def list_posts_by_job_ids(job_ids: list[str]) -> list[dict]:
+    """Return all posts for multiple jobs, ordered by created_at ASC."""
+    if not job_ids:
+        return []
+    client = get_client()
+    result = (
+        client.table("generated_posts")
+        .select("*")
+        .in_("job_id", job_ids)
+        .order("created_at")
+        .execute()
+    )
+    return result.data
+
+
+async def update_draft_status(draft_id: str, new_status: str) -> None:
+    """Update the status field on a parrilla_drafts row."""
+    client = get_client()
+    client.table("parrilla_drafts").update({
+        "status": new_status,
+    }).eq("id", draft_id).execute()
