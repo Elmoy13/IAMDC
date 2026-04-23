@@ -10,11 +10,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import ConversationNotFoundError
 from app.core.logging import get_logger
 from app.db.models.channel import Channel
+from app.db.models.channel_brand import ChannelBrand
 from app.db.models.contact import Contact
 from app.db.models.conversation import Conversation
 from app.db.models.message import Message
 
 logger = get_logger(__name__)
+
+
+def _build_active_brand(conv) -> dict | None:
+    """Build active_brand dict from conversation's active_brand_id."""
+    if not conv.active_brand_id:
+        return None
+    return {"id": conv.active_brand_id, "name": str(conv.active_brand_id)}
 
 
 async def list_conversations_by_agency(
@@ -91,7 +99,7 @@ async def list_conversations_by_agency(
                 "page_id": channel.page_id,
                 "page_name": None,
             },
-            "active_brand": None,  # Brand lookup would require join to brands table
+            "active_brand": _build_active_brand(conv),
             "tags": conv.tags if conv.tags else [],
         })
 
@@ -159,7 +167,7 @@ async def get_conversation_with_messages(
             "page_id": channel.page_id,
             "page_name": None,
         },
-        "active_brand": None,
+        "active_brand": _build_active_brand(conversation),
         "messages": [
             {
                 "id": m.id,

@@ -25,7 +25,7 @@ class IncomingMessageResult:
 def _resolve_active_brand(
     channel_brands: list[ChannelBrand],
     message_text: str,
-) -> ChannelBrand:
+) -> tuple[ChannelBrand, str]:
     """Resolve which brand responds when there are multiple.
 
     Strategy:
@@ -33,22 +33,24 @@ def _resolve_active_brand(
     2. Multiple with trigger_keywords → first match by priority
     3. No match → primary (is_primary=True)
     4. Fallback → lowest priority number
+
+    Returns (ChannelBrand, routing_reason).
     """
     if len(channel_brands) == 1:
-        return channel_brands[0]
+        return channel_brands[0], "single_brand"
 
     text_lower = message_text.lower()
     for cb in sorted(channel_brands, key=lambda x: x.priority):
         if cb.trigger_keywords:
             for keyword in cb.trigger_keywords:
                 if keyword.lower() in text_lower:
-                    return cb
+                    return cb, f"keyword_match:{keyword}"
 
     for cb in channel_brands:
         if cb.is_primary:
-            return cb
+            return cb, "is_primary"
 
-    return sorted(channel_brands, key=lambda x: x.priority)[0]
+    return sorted(channel_brands, key=lambda x: x.priority)[0], "lowest_priority"
 
 
 async def _get_or_create_contact(
@@ -180,9 +182,10 @@ async def process_incoming_message(
 
     # 2. Resolve active brand
     active_brand_id: uuid.UUID | None = None
+    routing_reason = "no_brands"
     if channel.channel_brands:
-        active_brand = _resolve_active_brand(channel.channel_brands, message_text)
-        active_brand_id = active_brand.brand_id
+        resolved_brand, routing_reason = _resolve_active_brand(channel.channel_brands, message_text)
+        active_brand_id = resolved_brand.brand_id
 
     # 3. Get or create contact (pass token for profile enrichment)
     _page_token: str | None = None
@@ -210,6 +213,28 @@ async def process_incoming_message(
         active_brand_id=active_brand_id,
     )
 
+    # 4b. Brand context preservation: if conversation already has a valid brand, keep it
+    if conversation.active_brand_id and channel.channel_brands:
+        valid_brand_ids = {cb.brand_id for cb in channel.channel_brands}
+        if conversation.active_brand_id in valid_brand_ids:
+            active_brand_id = conversation.active_brand_id
+            routing_reason = "context_preserved"
+        else:
+            # Existing brand no longer linked — update to newly resolved brand
+            if active_brand_id:
+                await db.execute(
+                    update(Conversation)
+                    .where(Conversation.id == conversation.id)
+                    .values(active_brand_id=active_brand_id)
+                )
+    elif active_brand_id and not conversation.active_brand_id:
+        # New conversation — set the resolved brand
+        await db.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation.id)
+            .values(active_brand_id=active_brand_id)
+        )
+
     # 5. Save the incoming message
     now = datetime.now(timezone.utc)
     incoming = Message(
@@ -235,6 +260,8 @@ async def process_incoming_message(
         sender_id=sender_id,
         mode=conversation.mode,
         agency_id=str(channel.agency_id),
+        active_brand_id=str(active_brand_id) if active_brand_id else None,
+        routing_reason=routing_reason,
     )
     return IncomingMessageResult(
         conversation_id=conversation.id,

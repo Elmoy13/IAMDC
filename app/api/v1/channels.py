@@ -3,7 +3,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
@@ -26,6 +26,26 @@ class ChannelInfo(BaseModel):
     page_id: str | None
     created_at: str | None
     brands: list[ChannelBrandInfo]
+
+
+class ChannelBrandDetail(BaseModel):
+    id: str
+    channel_id: str
+    brand_id: str
+    is_primary: bool
+    priority: int
+    trigger_keywords: list[str] | None = None
+
+
+class ChannelBrandInput(BaseModel):
+    brand_id: str
+    is_primary: bool = False
+    priority: int = Field(default=1, ge=1)
+    trigger_keywords: list[str] | None = None
+
+
+class ChannelBrandsUpdate(BaseModel):
+    brands: list[ChannelBrandInput]
 
 
 class PlatformOption(BaseModel):
@@ -181,3 +201,43 @@ async def delete_channel(
         raise HTTPException(403, "No access to this agency")
     await channel_service.delete_channel(db, channel_id, agency_id)
     return {"status": "deleted"}
+
+
+@router.get("/{channel_id}/brands", response_model=list[ChannelBrandDetail])
+async def list_channel_brands(
+    channel_id: UUID,
+    agency_id: UUID = Query(..., description="Agency that owns the channel"),
+    user: dict = Depends(get_current_user),
+    agency: dict = Depends(get_user_agency),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all brands linked to a channel, ordered by priority."""
+    if str(agency["agency_id"]) != str(agency_id):
+        raise HTTPException(403, "No access to this agency")
+    return await channel_service.list_channel_brands(db, channel_id, agency_id)
+
+
+@router.put("/{channel_id}/brands", response_model=list[ChannelBrandDetail])
+async def replace_channel_brands(
+    channel_id: UUID,
+    payload: ChannelBrandsUpdate,
+    agency_id: UUID = Query(..., description="Agency that owns the channel"),
+    user: dict = Depends(get_current_user),
+    agency: dict = Depends(get_user_agency),
+    db: AsyncSession = Depends(get_db),
+):
+    """Atomic replace of all brand assignments for a channel.
+
+    Deletes existing channel_brands and inserts the new set.
+    Validates exactly one brand is marked as primary.
+    """
+    if str(agency["agency_id"]) != str(agency_id):
+        raise HTTPException(403, "No access to this agency")
+
+    primary_count = sum(1 for b in payload.brands if b.is_primary)
+    if len(payload.brands) > 0 and primary_count != 1:
+        raise HTTPException(422, "Exactly one brand must be marked as primary")
+
+    return await channel_service.replace_channel_brands(
+        db, channel_id, agency_id, payload.brands,
+    )

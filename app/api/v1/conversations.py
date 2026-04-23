@@ -3,10 +3,11 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from app.api.deps import DbSession
 from app.core.exceptions import ConversationNotFoundError
-from app.db.models import Conversation, Message
+from app.db.models import ChannelBrand, Conversation, Message
 from app.middleware.auth import get_current_user, get_user_agency
 from app.schemas.conversation import (
     ConversationDetail,
@@ -131,4 +132,60 @@ async def update_conversation_mode(
                 pass  # Best-effort: don't fail the mode toggle
 
     conversation.mode = payload.mode
+    return conversation  # type: ignore[return-value]
+
+
+class ActiveBrandUpdate(BaseModel):
+    brand_id: uuid.UUID
+
+
+class ActiveBrandResponse(BaseModel):
+    id: uuid.UUID
+    active_brand_id: uuid.UUID | None
+
+    model_config = {"from_attributes": True}
+
+
+@router.patch("/{conversation_id}/active-brand", response_model=ActiveBrandResponse)
+async def update_active_brand(
+    conversation_id: uuid.UUID,
+    payload: ActiveBrandUpdate,
+    db: DbSession,
+    agency: dict = Depends(get_user_agency),
+):
+    """Change the active brand for a conversation.
+
+    Validates that the brand is actually linked to the conversation's channel.
+    """
+    result = await db.execute(
+        select(Conversation).where(Conversation.id == conversation_id)
+    )
+    conversation = result.scalar_one_or_none()
+    if not conversation:
+        raise ConversationNotFoundError()
+
+    if str(conversation.agency_id) != str(agency["agency_id"]):
+        raise HTTPException(status_code=403, detail="No access to this conversation")
+
+    # Validate brand is linked to channel
+    cb_result = await db.execute(
+        select(ChannelBrand).where(
+            ChannelBrand.channel_id == conversation.channel_id,
+            ChannelBrand.brand_id == payload.brand_id,
+        )
+    )
+    if not cb_result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=422,
+            detail="Brand is not linked to this conversation's channel",
+        )
+
+    await db.execute(
+        update(Conversation)
+        .where(Conversation.id == conversation_id)
+        .values(active_brand_id=payload.brand_id)
+    )
+    await db.commit()
+
+    await db.refresh(conversation)
     return conversation  # type: ignore[return-value]

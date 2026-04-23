@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -160,3 +160,102 @@ async def delete_channel(
 
     await db.delete(channel)
     await db.commit()
+
+
+async def list_channel_brands(
+    db: AsyncSession,
+    channel_id: uuid.UUID,
+    agency_id: uuid.UUID,
+) -> list[dict]:
+    """List brands for a channel, ordered by priority."""
+    # Verify channel belongs to agency
+    result = await db.execute(
+        select(Channel).where(
+            Channel.id == channel_id,
+            Channel.agency_id == agency_id,
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise ChannelNotFoundError(
+            detail=f"Channel {channel_id} not found in agency {agency_id}"
+        )
+
+    result = await db.execute(
+        select(ChannelBrand)
+        .where(ChannelBrand.channel_id == channel_id)
+        .order_by(ChannelBrand.priority)
+    )
+    brands = result.scalars().all()
+
+    return [
+        {
+            "id": str(cb.id),
+            "channel_id": str(cb.channel_id),
+            "brand_id": str(cb.brand_id),
+            "is_primary": cb.is_primary,
+            "priority": cb.priority,
+            "trigger_keywords": cb.trigger_keywords,
+        }
+        for cb in brands
+    ]
+
+
+async def replace_channel_brands(
+    db: AsyncSession,
+    channel_id: uuid.UUID,
+    agency_id: uuid.UUID,
+    brands: list,
+) -> list[dict]:
+    """Atomic delete+insert of channel brand assignments."""
+    # Verify channel belongs to agency
+    result = await db.execute(
+        select(Channel).where(
+            Channel.id == channel_id,
+            Channel.agency_id == agency_id,
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise ChannelNotFoundError(
+            detail=f"Channel {channel_id} not found in agency {agency_id}"
+        )
+
+    # Delete existing
+    await db.execute(
+        sa_delete(ChannelBrand).where(ChannelBrand.channel_id == channel_id)
+    )
+
+    # Insert new
+    new_brands: list[ChannelBrand] = []
+    for b in brands:
+        # Normalize keywords
+        keywords = None
+        if b.trigger_keywords:
+            keywords = list({kw.strip().lower() for kw in b.trigger_keywords if kw.strip()})
+
+        cb = ChannelBrand(
+            channel_id=channel_id,
+            brand_id=uuid.UUID(b.brand_id),
+            is_primary=b.is_primary,
+            priority=b.priority,
+            trigger_keywords=keywords,
+        )
+        db.add(cb)
+        new_brands.append(cb)
+
+    await db.commit()
+
+    # Refresh to get generated IDs
+    for cb in new_brands:
+        await db.refresh(cb)
+
+    return [
+        {
+            "id": str(cb.id),
+            "channel_id": str(cb.channel_id),
+            "brand_id": str(cb.brand_id),
+            "is_primary": cb.is_primary,
+            "priority": cb.priority,
+            "trigger_keywords": cb.trigger_keywords,
+        }
+        for cb in new_brands
+    ]
