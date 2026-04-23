@@ -67,8 +67,20 @@ async def _get_or_create_contact(
             Contact.platform_user_id == platform_user_id,
         )
     )
-    contact = result.scalar_one_or_none()
-    if contact:
+    contacts = result.scalars().all()
+    if len(contacts) == 1:
+        return contacts[0]
+    if len(contacts) > 1:
+        # Duplicates exist — use the oldest and log a warning
+        contact = min(contacts, key=lambda c: c.created_at or datetime.min)
+        logger.warning(
+            "duplicate_contacts_detected",
+            count=len(contacts),
+            agency_id=str(contact.agency_id),
+            platform=contact.platform,
+            platform_user_id=contact.platform_user_id,
+            keeping_id=str(contact.id),
+        )
         return contact
 
     contact = Contact(
