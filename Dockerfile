@@ -9,6 +9,12 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 # ── Runtime stage ─────────────────────────────────────────
 FROM python:3.12-slim
 
+# Install CA certificates for SSL (needed for Supabase, etc.)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-ca-certificates
+
 WORKDIR /app
 
 # Copy installed packages from builder
