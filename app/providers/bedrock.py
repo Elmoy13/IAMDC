@@ -10,6 +10,7 @@ import json
 from functools import lru_cache
 
 import boto3
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 from app.config import settings
@@ -33,6 +34,11 @@ def _get_bedrock_client():
         "region_name": settings.aws_region,
         "aws_access_key_id": settings.aws_access_key_id,
         "aws_secret_access_key": settings.aws_secret_access_key,
+        "config": BotoConfig(
+            read_timeout=120,
+            connect_timeout=10,
+            retries={"max_attempts": 0},  # we handle retries ourselves
+        ),
     }
     if settings.aws_session_token:
         kwargs["aws_session_token"] = settings.aws_session_token

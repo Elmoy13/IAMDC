@@ -420,3 +420,41 @@ async def test_job_config_persists_full_payload(client, monkeypatch):
     assert config["campaign"]["description"] == "Summer sale"
     assert config["include_logo_in_image"] is False
     assert config["include_text_in_image"] is False
+
+
+# ---------------------------------------------------------------------------
+# 9. Draft linkage failure returns 500 (not silently dropped)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_draft_linkage_error_returns_500(client, monkeypatch):
+    """When the draft lookup in /generate fails, the endpoint must return 500
+    instead of silently dropping the draft_id."""
+    # Make supabase draft lookup raise
+    mock_table = MagicMock()
+    mock_table.select.return_value.eq.return_value.eq.return_value.single.return_value.execute.side_effect = (
+        RuntimeError("Supabase connection refused")
+    )
+    mock_client = MagicMock()
+    mock_client.table.return_value = mock_table
+
+    monkeypatch.setattr("app.api.v1.posts.supabase_client.get_client", lambda: mock_client)
+
+    payload = {
+        "brand": {
+            "name": "TestBrand",
+            "logo_b64": "",
+            "primary_color": "#FF0000",
+            "secondary_color": "#00FF00",
+            "accent_color": "#0000FF",
+        },
+        "campaign": {"description": "Test", "tone": "fun"},
+        "posts_config": [{"platform": "instagram", "format": "instagram_feed"}],
+        "language": "es",
+        "draft_id": "draft-that-fails",
+    }
+
+    resp = await client.post("/api/v1/posts/generate", json=payload)
+    assert resp.status_code == 500
+    assert "Failed to link draft" in resp.json()["detail"]

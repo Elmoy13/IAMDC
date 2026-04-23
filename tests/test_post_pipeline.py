@@ -406,3 +406,146 @@ async def test_generate_image_for_post_uses_optimized_prompt(monkeypatch):
     # image_prompt_en should be persisted
     assert field_updates["p1"]["image_prompt_en"] == optimized_en
     assert field_updates["p1"]["image_status"] == "ready"
+
+
+# --------------------------------------------------------------------------
+# 7. generate_full_pipeline completes with images when all succeed
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_generate_full_pipeline_completes_with_images(monkeypatch):
+    """Full pipeline should end with job completed when images succeed."""
+    pipeline = PostPipeline()
+    payload = _make_payload(num_posts=2)
+    post_ids = ["p1", "p2"]
+
+    async def mock_copy_batch(job_id, post_ids, payload, language):
+        pass
+
+    async def mock_list_posts(job_id):
+        return [
+            {"id": "p1", "status": "success"},
+            {"id": "p2", "status": "success"},
+        ]
+
+    async def mock_update_fields(post_id, fields):
+        pass
+
+    async def mock_images_batch(post_ids, brand, product_images=None, **kwargs):
+        return {"succeeded": ["p1", "p2"], "failed": []}
+
+    monkeypatch.setattr(pipeline, "generate_copy_batch", mock_copy_batch)
+    monkeypatch.setattr(pipeline, "generate_images_batch", mock_images_batch)
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.list_posts_by_job",
+        mock_list_posts,
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.update_post_fields",
+        mock_update_fields,
+    )
+
+    complete_job_mock = AsyncMock()
+    fail_job_mock = AsyncMock()
+    monkeypatch.setattr("app.services.post_pipeline.supabase_client.complete_job", complete_job_mock)
+    monkeypatch.setattr("app.services.post_pipeline.supabase_client.fail_job", fail_job_mock)
+
+    mock_table = MagicMock()
+    mock_table.update.return_value.eq.return_value.execute.return_value = None
+    mock_client = MagicMock()
+    mock_client.table.return_value = mock_table
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.get_client",
+        lambda: mock_client,
+    )
+
+    await pipeline.generate_full_pipeline(
+        job_id="job-1",
+        post_ids=post_ids,
+        payload=payload,
+        language="es",
+    )
+
+    complete_job_mock.assert_called_once_with("job-1")
+    fail_job_mock.assert_not_called()
+
+
+# --------------------------------------------------------------------------
+# 8. generate_full_pipeline fails job when ALL images fail
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_job_fails_when_all_images_fail(monkeypatch):
+    """If every image generation fails, the job should be marked as failed."""
+    pipeline = PostPipeline()
+    payload = _make_payload(num_posts=2)
+    post_ids = ["p1", "p2"]
+
+    async def mock_copy_batch(job_id, post_ids, payload, language):
+        pass
+
+    async def mock_list_posts(job_id):
+        return [
+            {"id": "p1", "status": "success"},
+            {"id": "p2", "status": "success"},
+        ]
+
+    async def mock_update_fields(post_id, fields):
+        pass
+
+    async def mock_images_batch(post_ids, brand, product_images=None, **kwargs):
+        return {
+            "succeeded": [],
+            "failed": [("p1", "fal.ai 422"), ("p2", "fal.ai timeout")],
+        }
+
+    monkeypatch.setattr(pipeline, "generate_copy_batch", mock_copy_batch)
+    monkeypatch.setattr(pipeline, "generate_images_batch", mock_images_batch)
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.list_posts_by_job",
+        mock_list_posts,
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.update_post_fields",
+        mock_update_fields,
+    )
+
+    complete_job_mock = AsyncMock()
+    fail_job_mock = AsyncMock()
+    update_draft_mock = AsyncMock()
+    monkeypatch.setattr("app.services.post_pipeline.supabase_client.complete_job", complete_job_mock)
+    monkeypatch.setattr("app.services.post_pipeline.supabase_client.fail_job", fail_job_mock)
+    monkeypatch.setattr("app.services.post_pipeline.supabase_client.update_draft_status", update_draft_mock)
+
+    mock_table = MagicMock()
+    mock_table.update.return_value.eq.return_value.execute.return_value = None
+    mock_client = MagicMock()
+    mock_client.table.return_value = mock_table
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.get_client",
+        lambda: mock_client,
+    )
+
+    await pipeline.generate_full_pipeline(
+        job_id="job-1",
+        post_ids=post_ids,
+        payload=payload,
+        language="es",
+    )
+
+    # Job should be FAILED, not completed
+    fail_job_mock.assert_called_once()
+    assert "All images failed" in fail_job_mock.call_args[0][1]
+    complete_job_mock.assert_not_called()
+
+
+# --------------------------------------------------------------------------
+# 9. IMAGE_SEMAPHORE_LIMIT is 5 for reasonable parallelism
+# --------------------------------------------------------------------------
+
+
+def test_image_semaphore_limit_is_five():
+    """Semaphore should be 5 for fal.ai parallelism."""
+    assert IMAGE_SEMAPHORE_LIMIT == 5

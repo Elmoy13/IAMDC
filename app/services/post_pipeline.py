@@ -29,7 +29,7 @@ _FORMAT_ASPECT_RATIO: dict[str, str] = {
     "linkedin_post": "16:9",
 }
 
-IMAGE_SEMAPHORE_LIMIT = 3
+IMAGE_SEMAPHORE_LIMIT = 5
 
 
 class PostPipeline:
@@ -322,9 +322,11 @@ class PostPipeline:
         payload,  # SmartBatchRenderRequest
         language: str = "es",
     ) -> None:
-        """Full pipeline: copy + images in one pass (backward compat).
+        """Full pipeline: copy + images in one pass.
 
         Internally: generate_copy_batch → auto-approve → generate_images_batch.
+        Validates that at least one post ends up fully ready (copy + image)
+        before marking the job as completed.
         """
         try:
             # Phase 1: generate copy
@@ -346,6 +348,7 @@ class PostPipeline:
                     successful_ids.append(post["id"])
 
             if not successful_ids:
+                # copy_batch already called fail_job if 0 succeeded
                 return
 
             # Re-open job for image phase
@@ -363,7 +366,7 @@ class PostPipeline:
             }
 
             # Phase 2: generate images
-            await self.generate_images_batch(
+            image_result = await self.generate_images_batch(
                 post_ids=successful_ids,
                 brand=brand_dict,
                 product_images=payload.product_images,
@@ -372,7 +375,21 @@ class PostPipeline:
                 language=language,
             )
 
-            await supabase_client.complete_job(job_id)
+            # Validate: at least one image succeeded
+            if not image_result["succeeded"]:
+                error_details = "; ".join(
+                    f"{pid}: {err}" for pid, err in image_result["failed"]
+                )
+                await supabase_client.fail_job(
+                    job_id,
+                    f"All images failed to generate. {error_details[:500]}",
+                )
+                if payload.draft_id:
+                    await supabase_client.update_draft_status(
+                        payload.draft_id, "failed"
+                    )
+            else:
+                await supabase_client.complete_job(job_id)
 
         except Exception as exc:
             logger.error("full_pipeline_failed", job_id=job_id, error=str(exc))

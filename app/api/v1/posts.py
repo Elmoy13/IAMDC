@@ -106,13 +106,16 @@ async def _render_single(
 # POST /api/v1/posts/render
 # ---------------------------------------------------------------------------
 
-@posts_router.post("/render", response_model=RenderPostResponse)
+@posts_router.post("/render", response_model=RenderPostResponse, deprecated=True)
 async def render_post(
     payload: RenderPostRequest,
     _user: dict = Depends(get_current_user),
 ) -> RenderPostResponse:
-    """Generate a background with Vertex AI, build a post template with Claude,
+    """DEPRECATED — Use POST /posts/generate instead.
+
+    Generate a background with Vertex AI, build a post template with Claude,
     and render it to PNG with Playwright."""
+    logger.warning("deprecated_endpoint_called", endpoint="/posts/render")
 
     if payload.format not in _FORMAT_DIMENSIONS:
         raise HTTPException(
@@ -159,16 +162,18 @@ async def render_post(
 # POST /api/v1/posts/render-batch-legacy  (legacy — caller supplies copy + image prompts)
 # ---------------------------------------------------------------------------
 
-@posts_router.post("/render-batch-legacy", response_model=BatchRenderResponse)
+@posts_router.post("/render-batch-legacy", response_model=BatchRenderResponse, deprecated=True)
 async def render_batch(
     payload: BatchRenderRequest,
     _user: dict = Depends(get_current_user),
 ) -> BatchRenderResponse:
-    """Render multiple posts for a content grid sequentially.
+    """DEPRECATED — Use POST /posts/generate instead.
 
+    Render multiple posts for a content grid sequentially.
     Each post is processed one at a time to avoid overloading Vertex AI.
     Failures are captured per-item and do not abort the whole batch.
     """
+    logger.warning("deprecated_endpoint_called", endpoint="/posts/render-batch-legacy")
     results: list[BatchResultItem] = []
     brand = payload.brand.model_dump()
 
@@ -233,16 +238,18 @@ async def render_batch(
 # POST /api/v1/posts/render-batch  (intelligent — LLM generates copy + prompts)
 # ---------------------------------------------------------------------------
 
-@posts_router.post("/render-batch", response_model=SmartBatchRenderResponse)
+@posts_router.post("/render-batch", response_model=SmartBatchRenderResponse, deprecated=True)
 async def smart_render_batch(
     payload: SmartBatchRenderRequest,
     _user: dict = Depends(get_current_user),
 ) -> SmartBatchRenderResponse:
-    """Full intelligent pipeline:
+    """DEPRECATED — Use POST /posts/generate instead.
 
+    Full intelligent pipeline:
     1. One LLM call generates copy + image prompts for ALL posts from the brief.
     2. For each post: Vertex AI → background PNG → Nova Pro → HTML → Playwright → PNG.
     """
+    logger.warning("deprecated_endpoint_called", endpoint="/posts/render-batch")
     num_posts = len(payload.posts_config)
 
     # STEP 1 — Generate all content with a single LLM call
@@ -513,17 +520,19 @@ async def start_generation(
 # POST /api/v1/posts/generate-copy-only  (Phase 1 — copy, no images)
 # ---------------------------------------------------------------------------
 
-@posts_router.post("/generate-copy-only", response_model=GenerateResponse)
+@posts_router.post("/generate-copy-only", response_model=GenerateResponse, deprecated=True)
 async def generate_copy_only(
     payload: SmartBatchRenderRequest,
     background_tasks: BackgroundTasks,
     agency: dict = Depends(get_user_agency),
 ) -> GenerateResponse:
-    """Generate job + copies of posts. Images are NOT generated.
+    """DEPRECATED — Use POST /posts/generate instead (full pipeline).
 
+    Generate job + copies of posts. Images are NOT generated.
     The user must call /posts/{id}/approve-and-generate-image for each approved
     post, or /posts/job/{id}/generate-all-approved-images for bulk.
     """
+    logger.warning("deprecated_endpoint_called", endpoint="/posts/generate-copy-only")
     total_posts = len(payload.posts_config)
 
     # Resolve language
