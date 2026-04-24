@@ -65,9 +65,24 @@ async def optimize_image_prompt(
     elif platform and "linkedin" in platform:
         platform_hint = "LinkedIn professional, but human and approachable. "
 
+    # Build color palette hint so Flux respects the brand
+    color_hint = ""
+    colors = [
+        brand.get("primary_color"),
+        brand.get("secondary_color"),
+        brand.get("accent_color"),
+    ]
+    colors = [c for c in colors if c and c != "#000000" and c != "#ffffff"]
+    if colors:
+        color_hint = (
+            f"Brand color palette: {', '.join(colors)}. "
+            "The scene lighting and environment MUST reflect these tones. "
+        )
+
     user = (
         f"Brand: {brand.get('name', 'Unknown')}\n"
         f"Brand tone: {brand.get('tone', 'professional')}\n"
+        f"{color_hint}\n"
         f"{platform_hint}\n"
         f"{f'Format: {format_label}. ' if format_label else ''}\n\n"
         f"Spanish prompt to optimize:\n{prompt_es}\n\n"

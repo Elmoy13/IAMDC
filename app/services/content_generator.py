@@ -114,6 +114,18 @@ GENERA {num_posts} posts diferentes. Cada post debe tener:
    - Si el producto es digital (app, website), describe la escena con un teléfono
      mostrando la app. Si es físico, describe el producto en un escenario real.
 
+   REGLAS DE COLOR Y PALETA (CRÍTICAS):
+   - La escena DEBE reflejar la paleta de la marca:
+     * Color primario {color_primary} — debe dominar la escena (iluminación, elementos principales, fondo)
+     * Color secundario {color_secondary} — acentos, objetos de fondo, superficies
+     * Color acento {color_accent} — detalles, highlights, pequeños elementos
+   - Describe la escena CON la atmósfera de esos colores. Ejemplo: si el primario es
+     naranja cálido (#FF6B35), describe "warm orange ambient lighting, golden hour tones,
+     orange-tinted surfaces".
+   - Si la paleta es de tonos neutros/grises, describe escenas con materiales crudos:
+     piedra, concreto, acero, madera envejecida, tonos tierra.
+   - NUNCA uses colores que choquen con la paleta de la marca.
+
    TERMINA SIEMPRE con: "professional commercial product photography, sharp focus on product,
    absolutely no text, no words, no letters, no writing anywhere in the image"
 
@@ -278,15 +290,17 @@ async def enrich_context_from_supabase(
 
     if brand_id:
         try:
+            logger.info("enrich_brand_query", brand_id=brand_id)
             result = (
                 client.table("brands")
-                .select("name, vision_analysis, primary_color, secondary_color, accent_color, font_family")
+                .select("name, vision_analysis, primary_color, secondary_color, accent_color, font_family, logo_url")
                 .eq("id", brand_id)
-                .maybe_single()
                 .execute()
             )
             if result.data:
-                brand_context = result.data
+                brand_context = result.data[0]
+            else:
+                logger.warning("brand_not_found", brand_id=brand_id)
         except Exception as exc:
             logger.warning("enrich_brand_failed", brand_id=brand_id, error=str(exc))
 

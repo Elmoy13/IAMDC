@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.post_pipeline import PostPipeline, IMAGE_SEMAPHORE_LIMIT
+from app.services.post_pipeline import (
+    PostPipeline,
+    IMAGE_SEMAPHORE_LIMIT,
+    resolve_product_image_urls,
+    resolve_brand_logo_url,
+)
 from app.schemas.post import (
     BrandInputFull,
     CampaignInput,
@@ -718,3 +723,302 @@ async def test_nano_banana_adds_logo_overlay(monkeypatch):
     assert len(nano_calls) == 1
     assert nano_calls[0]["include_logo"] is True
     assert field_updates["p1"]["image_status"] == "ready"
+
+
+# --------------------------------------------------------------------------
+# 13. resolve_product_image_urls — base64 in payload takes priority
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_product_image_urls_from_payload(monkeypatch):
+    """When payload.product_images has data, it should be returned directly."""
+    payload = _make_payload()
+    payload.product_images = ["data:image/png;base64,abc"]
+
+    result = await resolve_product_image_urls(payload)
+    assert result == ["data:image/png;base64,abc"]
+
+
+# --------------------------------------------------------------------------
+# 14. resolve_product_image_urls — falls back to DB via selected_product_ids
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_product_image_urls_from_db(monkeypatch):
+    """When payload.product_images is empty, URLs should be fetched from
+    brand_products via the draft's selected_product_ids."""
+    payload = _make_payload()
+    payload.product_images = []
+    payload.draft_id = "draft-1"
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.get_draft",
+        AsyncMock(return_value={
+            "id": "draft-1",
+            "brand_id": "brand-1",
+            "selected_product_ids": ["prod-1", "prod-2"],
+        }),
+    )
+
+    # Mock Supabase client chain
+    mock_exec = MagicMock()
+    mock_exec.data = [
+        {"id": "prod-1", "image_url": "https://storage.example.com/prod1.png"},
+        {"id": "prod-2", "image_url": "https://storage.example.com/prod2.png"},
+    ]
+    mock_in = MagicMock()
+    mock_in.execute.return_value = mock_exec
+    mock_select = MagicMock()
+    mock_select.in_.return_value = mock_in
+    mock_table = MagicMock()
+    mock_table.select.return_value = mock_select
+    mock_client = MagicMock()
+    mock_client.table.return_value = mock_table
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.get_client",
+        lambda: mock_client,
+    )
+
+    result = await resolve_product_image_urls(payload)
+    assert result == [
+        "https://storage.example.com/prod1.png",
+        "https://storage.example.com/prod2.png",
+    ]
+    mock_client.table.assert_called_with("brand_products")
+
+
+# --------------------------------------------------------------------------
+# 15. resolve_product_image_urls — returns empty when no draft
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_product_image_urls_no_draft(monkeypatch):
+    """If there is no draft_id, should return empty list."""
+    payload = _make_payload()
+    payload.product_images = []
+    payload.draft_id = None
+
+    result = await resolve_product_image_urls(payload)
+    assert result == []
+
+
+# --------------------------------------------------------------------------
+# 16. resolve_brand_logo_url — b64 in payload takes priority
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_brand_logo_url_from_payload(monkeypatch):
+    """When payload.brand.logo_b64 has data, it should be uploaded and returned."""
+    payload = _make_payload()
+    payload.brand.logo_b64 = "data:image/png;base64,logo"
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.upload_image_to_fal",
+        AsyncMock(return_value="data:image/png;base64,logo"),
+    )
+
+    result = await resolve_brand_logo_url(payload)
+    assert result == "data:image/png;base64,logo"
+
+
+# --------------------------------------------------------------------------
+# 17. resolve_brand_logo_url — falls back to DB
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_brand_logo_url_from_db(monkeypatch):
+    """When payload has no logo_b64 but brand has logo_url in DB, use it."""
+    payload = _make_payload()
+    payload.brand.logo_b64 = ""
+    payload.draft_id = "draft-1"
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.get_draft",
+        AsyncMock(return_value={
+            "id": "draft-1",
+            "brand_id": "brand-1",
+        }),
+    )
+
+    mock_exec = MagicMock()
+    mock_exec.data = [{"logo_url": "https://storage.example.com/logo.png"}]
+    mock_eq = MagicMock()
+    mock_eq.execute.return_value = mock_exec
+    mock_select = MagicMock()
+    mock_select.eq.return_value = mock_eq
+    mock_table = MagicMock()
+    mock_table.select.return_value = mock_select
+    mock_client = MagicMock()
+    mock_client.table.return_value = mock_table
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.get_client",
+        lambda: mock_client,
+    )
+
+    result = await resolve_brand_logo_url(payload)
+    assert result == "https://storage.example.com/logo.png"
+
+
+# --------------------------------------------------------------------------
+# 18. Nano Banana runs WITHOUT product images when toggles are ON
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_nano_banana_runs_without_product_images(monkeypatch):
+    """When include_logo=True and include_text=True but product_images=[],
+    Nano Banana MUST still run after Flux text-to-image."""
+    pipeline = PostPipeline()
+    post = _mock_post("p1", approval_status="approved")
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.get_post",
+        AsyncMock(return_value=post),
+    )
+
+    field_updates = {}
+
+    async def mock_update_fields(post_id, fields):
+        field_updates.setdefault(post_id, {}).update(fields)
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.update_post_fields",
+        mock_update_fields,
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.optimize_image_prompt",
+        AsyncMock(return_value="optimized prompt"),
+    )
+
+    flux_calls = []
+
+    async def mock_flux(prompt, reference_image_url="", aspect_ratio="1:1"):
+        flux_calls.append({"ref": reference_image_url})
+        return "https://fal.run/result/flux.png"
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.generate_image_with_reference",
+        mock_flux,
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.download_image_as_base64",
+        AsyncMock(return_value="data:image/png;base64,imgdata"),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.upload_image_to_storage",
+        AsyncMock(return_value="https://storage.example.com/p1.png"),
+    )
+
+    nano_calls = []
+
+    async def mock_nano(**kwargs):
+        nano_calls.append(kwargs)
+        return "https://fal.run/result/nano.png"
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.nano_banana.enhance_post_image",
+        mock_nano,
+    )
+
+    await pipeline.generate_image_for_post(
+        post_id="p1",
+        brand={"primary_color": "#969693", "secondary_color": "#7C7C74"},
+        product_images=None,  # No product images!
+        include_logo_in_image=True,
+        include_text_in_image=True,
+        logo_url_for_overlay="https://storage.example.com/logo.png",
+    )
+
+    # Flux should have been called in text-to-image mode (empty reference)
+    assert len(flux_calls) == 1
+    assert flux_calls[0]["ref"] == ""
+
+    # Nano Banana MUST have been called despite no product images
+    assert len(nano_calls) == 1
+    assert nano_calls[0]["include_logo"] is True
+    assert nano_calls[0]["include_text"] is True
+    assert nano_calls[0]["logo_url"] == "https://storage.example.com/logo.png"
+    assert nano_calls[0]["headline"] == "Test Headline"
+    assert nano_calls[0]["cta"] == "Buy Now"
+
+    assert field_updates["p1"]["image_status"] == "ready"
+
+
+# --------------------------------------------------------------------------
+# 19. brand_dict in generate_full_pipeline has name & tone
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_full_pipeline_brand_dict_has_name_and_tone(monkeypatch):
+    """The brand dict passed to generate_images_batch in the full pipeline
+    must include 'name' and 'tone' for the prompt optimizer."""
+    pipeline = PostPipeline()
+    payload = _make_payload(num_posts=1)
+    post_ids = ["p1"]
+
+    captured_brand = {}
+
+    async def mock_copy_batch(job_id, post_ids, payload, language):
+        pass
+
+    async def mock_list_posts(job_id):
+        return [{"id": "p1", "status": "success"}]
+
+    async def mock_update_fields(post_id, fields):
+        pass
+
+    async def mock_images_batch(post_ids, brand, **kwargs):
+        captured_brand.update(brand)
+        return {"succeeded": post_ids, "failed": []}
+
+    monkeypatch.setattr(pipeline, "generate_copy_batch", mock_copy_batch)
+    monkeypatch.setattr(pipeline, "generate_images_batch", mock_images_batch)
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.list_posts_by_job",
+        mock_list_posts,
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.update_post_fields",
+        mock_update_fields,
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.complete_job",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.resolve_product_image_urls",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.resolve_brand_logo_url",
+        AsyncMock(return_value=None),
+    )
+
+    mock_table = MagicMock()
+    mock_table.update.return_value.eq.return_value.execute.return_value = None
+    mock_client = MagicMock()
+    mock_client.table.return_value = mock_table
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.get_client",
+        lambda: mock_client,
+    )
+
+    await pipeline.generate_full_pipeline(
+        job_id="job-1",
+        post_ids=post_ids,
+        payload=payload,
+        language="es",
+    )
+
+    # brand_dict must have name and tone
+    assert captured_brand["name"] == "TestBrand"
+    assert captured_brand["tone"] == "fun and casual"
+    assert captured_brand["primary_color"] == "#FF0000"
+    assert captured_brand["secondary_color"] == "#00FF00"
+    assert captured_brand["accent_color"] == "#0000FF"

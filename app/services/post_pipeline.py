@@ -30,6 +30,92 @@ _FORMAT_ASPECT_RATIO: dict[str, str] = {
 IMAGE_SEMAPHORE_LIMIT = 5
 
 
+# ---------------------------------------------------------------------------
+# Helpers — resolve product images & logo from DB when payload is empty
+# ---------------------------------------------------------------------------
+
+
+async def resolve_product_image_urls(payload) -> list[str]:
+    """Return product image URLs for Flux.
+
+    Priority:
+      1. ``payload.product_images`` (base64 data-URLs from the current session)
+      2. ``brand_products.image_url`` looked up via ``selected_product_ids``
+         stored on the draft.
+    """
+    if payload.product_images:
+        return payload.product_images
+
+    if not getattr(payload, "draft_id", None):
+        return []
+
+    draft = await supabase_client.get_draft(payload.draft_id)
+    if not draft:
+        return []
+
+    product_ids = draft.get("selected_product_ids") or []
+    if not product_ids:
+        return []
+
+    client = supabase_client.get_client()
+    products_result = (
+        client.table("brand_products")
+        .select("id, image_url")
+        .in_("id", product_ids)
+        .execute()
+    )
+
+    product_urls = [
+        p["image_url"]
+        for p in (products_result.data or [])
+        if p.get("image_url")
+    ]
+
+    logger.info(
+        "product_urls_resolved",
+        source="brand_products",
+        count=len(product_urls),
+        product_ids=product_ids,
+    )
+    return product_urls
+
+
+async def resolve_brand_logo_url(payload) -> str | None:
+    """Return a usable logo URL/data-URL.
+
+    Priority:
+      1. ``payload.brand.logo_b64`` (uploaded in the current session)
+      2. ``brands.logo_url`` read from the DB via the draft's brand_id.
+    """
+    if getattr(payload.brand, "logo_b64", None):
+        return await upload_image_to_fal(payload.brand.logo_b64)
+
+    if not getattr(payload, "draft_id", None):
+        return None
+
+    draft = await supabase_client.get_draft(payload.draft_id)
+    if not draft:
+        return None
+
+    brand_id = draft.get("brand_id")
+    if not brand_id:
+        return None
+
+    client = supabase_client.get_client()
+    result = (
+        client.table("brands")
+        .select("logo_url")
+        .eq("id", brand_id)
+        .execute()
+    )
+
+    if result.data and result.data[0].get("logo_url"):
+        logger.info("logo_resolved_from_db", brand_id=brand_id)
+        return result.data[0]["logo_url"]
+
+    return None
+
+
 class PostPipeline:
     """Orchestrates post generation in separate phases."""
 
@@ -151,13 +237,14 @@ class PostPipeline:
         include_logo_in_image: bool = False,
         include_text_in_image: bool = False,
         language: str = "es",
+        logo_url_for_overlay: str | None = None,
     ) -> None:
         """Generate image for ONE approved post.
 
         1. Load post from DB (must be status=success, image_status=pending)
         2. Mark image_status='generating'
         3. Flux Kontext Pro (fal.ai) for base image
-        4. Nano Banana overlay if requested
+        4. Nano Banana overlay if requested (always, regardless of product images)
         5. Upload to Supabase Storage
         6. Update post: image_status='ready', rendered_image_url=url
         """
@@ -181,73 +268,78 @@ class PostPipeline:
             # Persist the EN prompt for debugging / re-generation
             await supabase_client.update_post_fields(post_id, {"image_prompt_en": prompt_en})
 
-            # Upload product images to fal.ai URLs
+            # Resolve product image URLs (may be base64 data-URLs or public URLs)
             product_image_urls: list[str] = []
             if product_images:
-                for img_b64 in product_images:
-                    url = await upload_image_to_fal(img_b64)
+                for img in product_images:
+                    url = await upload_image_to_fal(img) if not img.startswith("http") else img
                     product_image_urls.append(url)
 
-            base_image_url_for_version = ""
-
+            # ----------------------------------------------------------
+            # Step 1: Generate base image with Flux
+            # ----------------------------------------------------------
             if product_image_urls:
-                product_url = product_image_urls[0]
-
-                # Flux Kontext Pro — product in scene
                 flux_image_url = await generate_image_with_reference(
                     prompt=prompt_en,
-                    reference_image_url=product_url,
+                    reference_image_url=product_image_urls[0],
                     aspect_ratio=aspect_ratio,
                 )
-
-                # Save base image (pre-overlays) to storage
-                base_b64 = await download_image_as_base64(flux_image_url)
-                base_filename = f"{job_id}/{post_id}_base.png"
-                base_image_url_for_version = await supabase_client.upload_image_to_storage(
-                    base_b64, base_filename,
-                )
-
-                # Nano Banana overlay if requested
-                if include_logo_in_image or include_text_in_image:
-                    logo_url = None
-                    if include_logo_in_image and brand.get("logo_b64"):
-                        logo_url = await upload_image_to_fal(brand["logo_b64"])
-
-                    enhanced_url = await nano_banana.enhance_post_image(
-                        base_image_url=flux_image_url,
-                        logo_url=logo_url,
-                        headline=post["headline"] if include_text_in_image else None,
-                        cta=post["cta"] if include_text_in_image else None,
-                        brand_colors={
-                            "primary_color": brand.get("primary_color", "#000000"),
-                            "secondary_color": brand.get("secondary_color", "#ffffff"),
-                        },
-                        include_logo=include_logo_in_image,
-                        include_text=include_text_in_image,
-                        language=language,
-                    )
-                    image_b64 = await download_image_as_base64(enhanced_url)
-                else:
-                    image_b64 = base_b64
             else:
-                # No product images — use Flux Kontext Pro text-to-image
                 flux_image_url = await generate_image_with_reference(
                     prompt=prompt_en,
                     reference_image_url="",
                     aspect_ratio=aspect_ratio,
                 )
-                base_b64 = await download_image_as_base64(flux_image_url)
-                base_filename = f"{job_id}/{post_id}_base.png"
-                base_image_url_for_version = await supabase_client.upload_image_to_storage(
-                    base_b64, base_filename,
+
+            # Save base image (pre-overlays) to storage
+            base_b64 = await download_image_as_base64(flux_image_url)
+            base_filename = f"{job_id}/{post_id}_base.png"
+            base_image_url_for_version = await supabase_client.upload_image_to_storage(
+                base_b64, base_filename,
+            )
+
+            # ----------------------------------------------------------
+            # Step 2: Nano Banana overlay (ALWAYS if toggles are on)
+            # ----------------------------------------------------------
+            needs_overlay = include_logo_in_image or include_text_in_image
+
+            if needs_overlay:
+                # Resolve logo if not pre-resolved
+                overlay_logo = logo_url_for_overlay
+                if not overlay_logo and include_logo_in_image and brand.get("logo_b64"):
+                    overlay_logo = await upload_image_to_fal(brand["logo_b64"])
+
+                logger.info(
+                    "nano_banana_triggered",
+                    post_id=post_id,
+                    include_logo=include_logo_in_image,
+                    include_text=include_text_in_image,
+                    has_logo_source=overlay_logo is not None,
                 )
+
+                enhanced_url = await nano_banana.enhance_post_image(
+                    base_image_url=flux_image_url,
+                    logo_url=overlay_logo if include_logo_in_image else None,
+                    headline=post["headline"] if include_text_in_image else None,
+                    cta=post["cta"] if include_text_in_image else None,
+                    brand_colors={
+                        "primary_color": brand.get("primary_color", "#000000"),
+                        "secondary_color": brand.get("secondary_color", "#ffffff"),
+                    },
+                    include_logo=include_logo_in_image,
+                    include_text=include_text_in_image,
+                    language=language,
+                )
+                image_b64 = await download_image_as_base64(enhanced_url)
+            else:
                 image_b64 = base_b64
 
-            # Upload final image to Supabase Storage
+            # ----------------------------------------------------------
+            # Step 3: Upload final image to Supabase Storage
+            # ----------------------------------------------------------
             filename = f"{job_id}/{post_id}.png"
             image_url = await supabase_client.upload_image_to_storage(image_b64, filename)
 
-            # Update post
             await supabase_client.update_post_fields(post_id, {
                 "image_status": "ready",
                 "rendered_image_url": image_url,
@@ -279,6 +371,7 @@ class PostPipeline:
         include_logo_in_image: bool = False,
         include_text_in_image: bool = False,
         language: str = "es",
+        logo_url_for_overlay: str | None = None,
     ) -> dict:
         """Generate images for multiple approved posts in parallel.
 
@@ -298,6 +391,7 @@ class PostPipeline:
                         include_logo_in_image=include_logo_in_image,
                         include_text_in_image=include_text_in_image,
                         language=language,
+                        logo_url_for_overlay=logo_url_for_overlay,
                     )
                     return (post_id, None)
                 except Exception as e:
@@ -363,22 +457,33 @@ class PostPipeline:
                 "status": "processing",
             }).eq("id", job_id).execute()
 
-            # Build brand dict for image generation
+            # Resolve product images from DB if payload had none
+            resolved_product_images = await resolve_product_image_urls(payload)
+
+            # Resolve logo URL from DB if payload had no logo_b64
+            resolved_logo_url = await resolve_brand_logo_url(payload)
+
+            # Build brand dict for image generation (with all keys the
+            # optimizer and Nano Banana need)
             brand_dict = {
+                "name": payload.brand.name,
+                "tone": payload.campaign.tone or "professional",
                 "logo_b64": payload.brand.logo_b64,
                 "primary_color": payload.brand.primary_color,
                 "secondary_color": payload.brand.secondary_color,
                 "accent_color": payload.brand.accent_color,
+                "font_family": getattr(payload.brand, "font_family", "Montserrat"),
             }
 
             # Phase 2: generate images
             image_result = await self.generate_images_batch(
                 post_ids=successful_ids,
                 brand=brand_dict,
-                product_images=payload.product_images,
+                product_images=resolved_product_images or None,
                 include_logo_in_image=payload.include_logo_in_image,
                 include_text_in_image=payload.include_text_in_image,
                 language=language,
+                logo_url_for_overlay=resolved_logo_url,
             )
 
             # Validate: at least one image succeeded

@@ -42,7 +42,11 @@ from app.services import video_generator
 from app.services import nano_banana
 from app.services.language_detector import detect_language
 from app.services import edit_director, post_regenerator
-from app.services.post_pipeline import post_pipeline
+from app.services.post_pipeline import (
+    post_pipeline,
+    resolve_product_image_urls,
+    resolve_brand_logo_url,
+)
 
 logger = get_logger(__name__)
 
@@ -659,14 +663,46 @@ async def approve_and_generate_image(
     job = await supabase_client.get_job(post["job_id"])
     job_config = job.get("config") or {} if job else {}
 
+    # Resolve product images (may be empty in config — fall back to DB)
+    product_images = job_config.get("product_images") or []
+    if not product_images and job.get("draft_id"):
+        draft = await supabase_client.get_draft(job["draft_id"])
+        if draft:
+            product_ids = draft.get("selected_product_ids") or []
+            if product_ids:
+                sc = supabase_client.get_client()
+                pr = sc.table("brand_products").select("id, image_url").in_("id", product_ids).execute()
+                product_images = [p["image_url"] for p in (pr.data or []) if p.get("image_url")]
+
+    # Resolve logo URL from DB if not in config
+    brand_cfg = job_config.get("brand", {})
+    logo_url_for_overlay = None
+    if brand_cfg.get("logo_b64"):
+        logo_url_for_overlay = await upload_image_to_fal(brand_cfg["logo_b64"])
+    elif job.get("draft_id"):
+        draft = draft if "draft" in dir() else await supabase_client.get_draft(job["draft_id"])
+        if draft and draft.get("brand_id"):
+            sc = supabase_client.get_client()
+            br = sc.table("brands").select("logo_url").eq("id", draft["brand_id"]).execute()
+            if br.data and br.data[0].get("logo_url"):
+                logo_url_for_overlay = br.data[0]["logo_url"]
+
+    # Ensure brand dict has name/tone for the optimizer
+    if not brand_cfg.get("name") and job.get("brand_name"):
+        brand_cfg["name"] = job["brand_name"]
+    if not brand_cfg.get("tone"):
+        campaign_cfg = job_config.get("campaign", {})
+        brand_cfg["tone"] = campaign_cfg.get("tone", "professional")
+
     background_tasks.add_task(
         post_pipeline.generate_image_for_post,
         post_id=post_id,
-        brand=job_config.get("brand", {}),
-        product_images=job_config.get("product_images"),
+        brand=brand_cfg,
+        product_images=product_images or None,
         include_logo_in_image=job_config.get("include_logo_in_image", False),
         include_text_in_image=job_config.get("include_text_in_image", False),
         language=job.get("language", "es") if job else "es",
+        logo_url_for_overlay=logo_url_for_overlay,
     )
 
     return ApproveAndGenerateImageResponse(
@@ -709,14 +745,46 @@ async def generate_all_approved_images(
     job = await supabase_client.get_job(job_id)
     job_config = job.get("config") or {} if job else {}
 
+    # Resolve product images (may be empty in config — fall back to DB)
+    product_images = job_config.get("product_images") or []
+    if not product_images and job.get("draft_id"):
+        draft = await supabase_client.get_draft(job["draft_id"])
+        if draft:
+            pids = draft.get("selected_product_ids") or []
+            if pids:
+                sc = supabase_client.get_client()
+                pr = sc.table("brand_products").select("id, image_url").in_("id", pids).execute()
+                product_images = [p["image_url"] for p in (pr.data or []) if p.get("image_url")]
+
+    # Resolve logo URL from DB if not in config
+    brand_cfg = job_config.get("brand", {})
+    logo_url_for_overlay = None
+    if brand_cfg.get("logo_b64"):
+        logo_url_for_overlay = await upload_image_to_fal(brand_cfg["logo_b64"])
+    elif job.get("draft_id"):
+        draft = draft if "draft" in dir() else await supabase_client.get_draft(job["draft_id"])
+        if draft and draft.get("brand_id"):
+            sc = supabase_client.get_client()
+            br = sc.table("brands").select("logo_url").eq("id", draft["brand_id"]).execute()
+            if br.data and br.data[0].get("logo_url"):
+                logo_url_for_overlay = br.data[0]["logo_url"]
+
+    # Ensure brand dict has name/tone for the optimizer
+    if not brand_cfg.get("name") and job.get("brand_name"):
+        brand_cfg["name"] = job["brand_name"]
+    if not brand_cfg.get("tone"):
+        campaign_cfg = job_config.get("campaign", {})
+        brand_cfg["tone"] = campaign_cfg.get("tone", "professional")
+
     background_tasks.add_task(
         post_pipeline.generate_images_batch,
         post_ids=post_ids,
-        brand=job_config.get("brand", {}),
-        product_images=job_config.get("product_images"),
+        brand=brand_cfg,
+        product_images=product_images or None,
         include_logo_in_image=job_config.get("include_logo_in_image", False),
         include_text_in_image=job_config.get("include_text_in_image", False),
         language=job.get("language", "es") if job else "es",
+        logo_url_for_overlay=logo_url_for_overlay,
     )
 
     return GenerateAllApprovedImagesResponse(

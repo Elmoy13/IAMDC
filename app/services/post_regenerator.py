@@ -277,6 +277,19 @@ async def _regen_base_image(
         logo_url = None
         if brand_context and brand_context.get("logo_b64"):
             logo_url = await upload_image_to_fal(brand_context["logo_b64"])
+        elif brand_context and brand_context.get("logo_url"):
+            logo_url = brand_context["logo_url"]
+        else:
+            # Try to resolve logo from DB via the job's draft
+            job_config = job.get("config") or {}
+            draft_id = job.get("draft_id")
+            if draft_id:
+                draft = await supabase_client.get_draft(draft_id)
+                if draft and draft.get("brand_id"):
+                    sc = supabase_client.get_client()
+                    br = sc.table("brands").select("logo_url").eq("id", draft["brand_id"]).execute()
+                    if br.data and br.data[0].get("logo_url"):
+                        logo_url = br.data[0]["logo_url"]
 
         colors = {}
         if brand_context:
