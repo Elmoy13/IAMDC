@@ -753,29 +753,39 @@ async def test_resolve_product_image_urls_from_db(monkeypatch):
     payload.product_images = []
     payload.draft_id = "draft-1"
 
-    monkeypatch.setattr(
-        "app.services.post_pipeline.supabase_client.get_draft",
-        AsyncMock(return_value={
-            "id": "draft-1",
-            "brand_id": "brand-1",
-            "selected_product_ids": ["prod-1", "prod-2"],
-        }),
-    )
+    # Mock Supabase client that handles two sequential .table() calls:
+    #   1. parrilla_drafts → returns selected_product_ids
+    #   2. brand_products  → returns image URLs
+    draft_exec = MagicMock()
+    draft_exec.data = [{"selected_product_ids": ["prod-1", "prod-2"]}]
 
-    # Mock Supabase client chain
-    mock_exec = MagicMock()
-    mock_exec.data = [
-        {"id": "prod-1", "image_url": "https://storage.example.com/prod1.png"},
-        {"id": "prod-2", "image_url": "https://storage.example.com/prod2.png"},
+    products_exec = MagicMock()
+    products_exec.data = [
+        {"id": "prod-1", "image_url": "https://storage.example.com/prod1.png", "name": "P1"},
+        {"id": "prod-2", "image_url": "https://storage.example.com/prod2.png", "name": "P2"},
     ]
-    mock_in = MagicMock()
-    mock_in.execute.return_value = mock_exec
-    mock_select = MagicMock()
-    mock_select.in_.return_value = mock_in
-    mock_table = MagicMock()
-    mock_table.select.return_value = mock_select
+
+    def _make_table(table_name):
+        if table_name == "parrilla_drafts":
+            mock_eq = MagicMock()
+            mock_eq.execute.return_value = draft_exec
+            mock_select = MagicMock()
+            mock_select.eq.return_value = mock_eq
+            mock_t = MagicMock()
+            mock_t.select.return_value = mock_select
+            return mock_t
+        elif table_name == "brand_products":
+            mock_in = MagicMock()
+            mock_in.execute.return_value = products_exec
+            mock_select = MagicMock()
+            mock_select.in_.return_value = mock_in
+            mock_t = MagicMock()
+            mock_t.select.return_value = mock_select
+            return mock_t
+        return MagicMock()
+
     mock_client = MagicMock()
-    mock_client.table.return_value = mock_table
+    mock_client.table.side_effect = _make_table
     monkeypatch.setattr(
         "app.services.post_pipeline.supabase_client.get_client",
         lambda: mock_client,
@@ -786,7 +796,6 @@ async def test_resolve_product_image_urls_from_db(monkeypatch):
         "https://storage.example.com/prod1.png",
         "https://storage.example.com/prod2.png",
     ]
-    mock_client.table.assert_called_with("brand_products")
 
 
 # --------------------------------------------------------------------------
@@ -837,24 +846,36 @@ async def test_resolve_brand_logo_url_from_db(monkeypatch):
     payload.brand.logo_b64 = ""
     payload.draft_id = "draft-1"
 
-    monkeypatch.setattr(
-        "app.services.post_pipeline.supabase_client.get_draft",
-        AsyncMock(return_value={
-            "id": "draft-1",
-            "brand_id": "brand-1",
-        }),
-    )
+    # Mock Supabase client handling two sequential .table() calls:
+    #   1. parrilla_drafts → returns brand_id
+    #   2. brands           → returns logo_url
+    draft_exec = MagicMock()
+    draft_exec.data = [{"brand_id": "brand-1"}]
 
-    mock_exec = MagicMock()
-    mock_exec.data = [{"logo_url": "https://storage.example.com/logo.png"}]
-    mock_eq = MagicMock()
-    mock_eq.execute.return_value = mock_exec
-    mock_select = MagicMock()
-    mock_select.eq.return_value = mock_eq
-    mock_table = MagicMock()
-    mock_table.select.return_value = mock_select
+    brands_exec = MagicMock()
+    brands_exec.data = [{"logo_url": "https://storage.example.com/logo.png"}]
+
+    def _make_table(table_name):
+        if table_name == "parrilla_drafts":
+            mock_eq = MagicMock()
+            mock_eq.execute.return_value = draft_exec
+            mock_select = MagicMock()
+            mock_select.eq.return_value = mock_eq
+            mock_t = MagicMock()
+            mock_t.select.return_value = mock_select
+            return mock_t
+        elif table_name == "brands":
+            mock_eq = MagicMock()
+            mock_eq.execute.return_value = brands_exec
+            mock_select = MagicMock()
+            mock_select.eq.return_value = mock_eq
+            mock_t = MagicMock()
+            mock_t.select.return_value = mock_select
+            return mock_t
+        return MagicMock()
+
     mock_client = MagicMock()
-    mock_client.table.return_value = mock_table
+    mock_client.table.side_effect = _make_table
     monkeypatch.setattr(
         "app.services.post_pipeline.supabase_client.get_client",
         lambda: mock_client,
@@ -1022,3 +1043,244 @@ async def test_full_pipeline_brand_dict_has_name_and_tone(monkeypatch):
     assert captured_brand["primary_color"] == "#FF0000"
     assert captured_brand["secondary_color"] == "#00FF00"
     assert captured_brand["accent_color"] == "#0000FF"
+
+
+# --------------------------------------------------------------------------
+# 20. Flux Kontext Pro called when product URLs are resolved
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flux_kontext_called_when_product_urls_present(monkeypatch):
+    """When product_images has a public URL, Flux should be called with a
+    non-empty reference_image_url (Kontext mode)."""
+    pipeline = PostPipeline()
+    post = _mock_post("p1", approval_status="approved")
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.get_post",
+        AsyncMock(return_value=post),
+    )
+
+    field_updates = {}
+
+    async def mock_update_fields(post_id, fields):
+        field_updates.setdefault(post_id, {}).update(fields)
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.update_post_fields",
+        mock_update_fields,
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.optimize_image_prompt",
+        AsyncMock(return_value="optimized prompt"),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.download_image_as_base64",
+        AsyncMock(return_value="data:image/png;base64,imgdata"),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.upload_image_to_storage",
+        AsyncMock(return_value="https://storage.example.com/p1.png"),
+    )
+
+    flux_calls = []
+
+    async def mock_flux(prompt, reference_image_url="", aspect_ratio="1:1"):
+        flux_calls.append({
+            "ref": reference_image_url,
+            "aspect_ratio": aspect_ratio,
+        })
+        return "https://fal.run/result/kontext.png"
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.generate_image_with_reference",
+        mock_flux,
+    )
+
+    # Provide a public URL (as resolve_product_image_urls would return)
+    await pipeline.generate_image_for_post(
+        post_id="p1",
+        brand={"primary_color": "#000"},
+        product_images=["https://storage.supabase.co/brand-assets/product.png"],
+    )
+
+    # Flux should be called in Kontext mode (non-empty reference)
+    assert len(flux_calls) == 1
+    assert flux_calls[0]["ref"] == "https://storage.supabase.co/brand-assets/product.png"
+    assert flux_calls[0]["aspect_ratio"] == "1:1"
+    assert field_updates["p1"]["image_status"] == "ready"
+
+
+# --------------------------------------------------------------------------
+# 21. Flux Pro 1.1 called when no product URLs
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flux_pro_v11_called_when_no_product_urls(monkeypatch):
+    """When there are no product images, Flux should be called with
+    empty reference_image_url (text-to-image mode)."""
+    pipeline = PostPipeline()
+    post = _mock_post("p1", approval_status="approved")
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.get_post",
+        AsyncMock(return_value=post),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.update_post_fields",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.optimize_image_prompt",
+        AsyncMock(return_value="optimized prompt"),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.download_image_as_base64",
+        AsyncMock(return_value="data:image/png;base64,imgdata"),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.upload_image_to_storage",
+        AsyncMock(return_value="https://storage.example.com/p1.png"),
+    )
+
+    flux_calls = []
+
+    async def mock_flux(prompt, reference_image_url="", aspect_ratio="1:1"):
+        flux_calls.append({"ref": reference_image_url})
+        return "https://fal.run/result/text2img.png"
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.generate_image_with_reference",
+        mock_flux,
+    )
+
+    await pipeline.generate_image_for_post(
+        post_id="p1",
+        brand={"primary_color": "#000"},
+        product_images=None,
+    )
+
+    assert len(flux_calls) == 1
+    assert flux_calls[0]["ref"] == ""
+
+
+# --------------------------------------------------------------------------
+# 22. Aspect ratio mapping — instagram_feed → 1:1
+# --------------------------------------------------------------------------
+
+
+def test_aspect_ratio_mapping_instagram_feed():
+    from app.services.post_pipeline import _FORMAT_ASPECT_RATIO
+    assert _FORMAT_ASPECT_RATIO["instagram_feed"] == "1:1"
+
+
+# --------------------------------------------------------------------------
+# 23. Aspect ratio mapping — instagram_story → 9:16
+# --------------------------------------------------------------------------
+
+
+def test_aspect_ratio_mapping_instagram_story():
+    from app.services.post_pipeline import _FORMAT_ASPECT_RATIO
+    assert _FORMAT_ASPECT_RATIO["instagram_story"] == "9:16"
+
+
+# --------------------------------------------------------------------------
+# 24. Aspect ratio mapping completeness
+# --------------------------------------------------------------------------
+
+
+def test_aspect_ratio_mapping_all_formats():
+    from app.services.post_pipeline import _FORMAT_ASPECT_RATIO
+    assert _FORMAT_ASPECT_RATIO["instagram_reel"] == "9:16"
+    assert _FORMAT_ASPECT_RATIO["facebook_post"] == "1:1"
+    assert _FORMAT_ASPECT_RATIO["facebook_cover"] == "16:9"
+    assert _FORMAT_ASPECT_RATIO["linkedin_post"] == "1:1"
+    assert _FORMAT_ASPECT_RATIO["tiktok_video"] == "9:16"
+    assert _FORMAT_ASPECT_RATIO["twitter_post"] == "16:9"
+
+
+# --------------------------------------------------------------------------
+# 25. resolve_product_image_urls returns empty when draft has no selected_ids
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_product_image_urls_no_selected_ids(monkeypatch):
+    """If the draft exists but has no selected_product_ids, return []."""
+    payload = _make_payload()
+    payload.product_images = []
+    payload.draft_id = "draft-1"
+
+    draft_exec = MagicMock()
+    draft_exec.data = [{"selected_product_ids": None}]
+
+    mock_eq = MagicMock()
+    mock_eq.execute.return_value = draft_exec
+    mock_select = MagicMock()
+    mock_select.eq.return_value = mock_eq
+    mock_table = MagicMock()
+    mock_table.select.return_value = mock_select
+    mock_client = MagicMock()
+    mock_client.table.return_value = mock_table
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.get_client",
+        lambda: mock_client,
+    )
+
+    result = await resolve_product_image_urls(payload)
+    assert result == []
+
+
+# --------------------------------------------------------------------------
+# 26. Aspect ratio propagated to Flux in generate_image_for_post
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aspect_ratio_propagated_to_flux(monkeypatch):
+    """The aspect_ratio derived from the post format should be passed to Flux."""
+    pipeline = PostPipeline()
+    post = _mock_post("p1", approval_status="approved", fmt="instagram_story")
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.get_post",
+        AsyncMock(return_value=post),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.update_post_fields",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.optimize_image_prompt",
+        AsyncMock(return_value="optimized prompt"),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.download_image_as_base64",
+        AsyncMock(return_value="data:image/png;base64,imgdata"),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.upload_image_to_storage",
+        AsyncMock(return_value="https://storage.example.com/p1.png"),
+    )
+
+    flux_calls = []
+
+    async def mock_flux(prompt, reference_image_url="", aspect_ratio="1:1"):
+        flux_calls.append({"aspect_ratio": aspect_ratio})
+        return "https://fal.run/result/story.png"
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.generate_image_with_reference",
+        mock_flux,
+    )
+
+    await pipeline.generate_image_for_post(
+        post_id="p1",
+        brand={"primary_color": "#000"},
+        product_images=None,
+    )
+
+    assert len(flux_calls) == 1
+    assert flux_calls[0]["aspect_ratio"] == "9:16"

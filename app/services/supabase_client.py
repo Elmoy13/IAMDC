@@ -453,10 +453,11 @@ async def get_draft(draft_id: str) -> dict | None:
         client.table("parrilla_drafts")
         .select("*")
         .eq("id", draft_id)
-        .maybe_single()
         .execute()
     )
-    return result.data
+    if result.data:
+        return result.data[0]
+    return None
 
 
 async def list_jobs_by_draft(draft_id: str) -> list[dict]:

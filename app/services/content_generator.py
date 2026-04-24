@@ -299,6 +299,13 @@ async def enrich_context_from_supabase(
             )
             if result.data:
                 brand_context = result.data[0]
+                logger.info(
+                    "brand_enriched",
+                    brand_id=brand_id,
+                    has_vision_analysis=bool(brand_context.get("vision_analysis")),
+                    has_logo_url=bool(brand_context.get("logo_url")),
+                    primary_color=brand_context.get("primary_color"),
+                )
             else:
                 logger.warning("brand_not_found", brand_id=brand_id)
         except Exception as exc:
@@ -310,14 +317,14 @@ async def enrich_context_from_supabase(
                 client.table("parrilla_drafts")
                 .select("selected_product_ids")
                 .eq("id", draft_id)
-                .maybe_single()
                 .execute()
             )
-            if draft_result.data and draft_result.data.get("selected_product_ids"):
+            draft_row = draft_result.data[0] if draft_result.data else None
+            if draft_row and draft_row.get("selected_product_ids"):
                 products_result = (
                     client.table("brand_products")
                     .select("*")
-                    .in_("id", draft_result.data["selected_product_ids"])
+                    .in_("id", draft_row["selected_product_ids"])
                     .execute()
                 )
                 products = products_result.data or []

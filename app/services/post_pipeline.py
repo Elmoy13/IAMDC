@@ -21,10 +21,19 @@ from app.services.prompt_optimizer import optimize_image_prompt
 logger = get_logger(__name__)
 
 _FORMAT_ASPECT_RATIO: dict[str, str] = {
+    # Instagram
     "instagram_feed": "1:1",
     "instagram_story": "9:16",
-    "facebook_post": "16:9",
-    "linkedin_post": "16:9",
+    "instagram_reel": "9:16",
+    # Facebook
+    "facebook_post": "1:1",
+    "facebook_cover": "16:9",
+    # LinkedIn
+    "linkedin_post": "1:1",
+    # TikTok
+    "tiktok_video": "9:16",
+    # Twitter / X
+    "twitter_post": "16:9",
 }
 
 IMAGE_SEMAPHORE_LIMIT = 5
@@ -44,26 +53,50 @@ async def resolve_product_image_urls(payload) -> list[str]:
          stored on the draft.
     """
     if payload.product_images:
+        logger.info(
+            "product_urls_from_payload",
+            count=len(payload.product_images),
+        )
         return payload.product_images
 
-    if not getattr(payload, "draft_id", None):
+    draft_id = getattr(payload, "draft_id", None)
+    if not draft_id:
+        logger.info("resolve_product_urls_no_draft")
         return []
 
-    draft = await supabase_client.get_draft(payload.draft_id)
-    if not draft:
-        return []
-
-    product_ids = draft.get("selected_product_ids") or []
-    if not product_ids:
-        return []
-
+    # Read selected_product_ids directly from the draft table
+    # (avoids dependency on get_draft which may strip fields)
     client = supabase_client.get_client()
-    products_result = (
-        client.table("brand_products")
-        .select("id, image_url")
-        .in_("id", product_ids)
-        .execute()
-    )
+    try:
+        draft_result = (
+            client.table("parrilla_drafts")
+            .select("selected_product_ids")
+            .eq("id", draft_id)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning("resolve_product_urls_draft_query_failed", draft_id=draft_id, error=str(exc))
+        return []
+
+    if not draft_result.data:
+        logger.info("resolve_product_urls_draft_not_found", draft_id=draft_id)
+        return []
+
+    product_ids = draft_result.data[0].get("selected_product_ids") or []
+    if not product_ids:
+        logger.info("resolve_product_urls_no_selected_ids", draft_id=draft_id)
+        return []
+
+    try:
+        products_result = (
+            client.table("brand_products")
+            .select("id, image_url, name")
+            .in_("id", product_ids)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning("resolve_product_urls_products_query_failed", error=str(exc))
+        return []
 
     product_urls = [
         p["image_url"]
@@ -76,6 +109,7 @@ async def resolve_product_image_urls(payload) -> list[str]:
         source="brand_products",
         count=len(product_urls),
         product_ids=product_ids,
+        urls=[u[:80] for u in product_urls],
     )
     return product_urls
 
@@ -88,26 +122,44 @@ async def resolve_brand_logo_url(payload) -> str | None:
       2. ``brands.logo_url`` read from the DB via the draft's brand_id.
     """
     if getattr(payload.brand, "logo_b64", None):
+        logger.info("logo_from_payload_b64")
         return await upload_image_to_fal(payload.brand.logo_b64)
 
-    if not getattr(payload, "draft_id", None):
-        return None
-
-    draft = await supabase_client.get_draft(payload.draft_id)
-    if not draft:
-        return None
-
-    brand_id = draft.get("brand_id")
-    if not brand_id:
+    draft_id = getattr(payload, "draft_id", None)
+    if not draft_id:
         return None
 
     client = supabase_client.get_client()
-    result = (
-        client.table("brands")
-        .select("logo_url")
-        .eq("id", brand_id)
-        .execute()
-    )
+
+    # Read brand_id from the draft
+    try:
+        draft_result = (
+            client.table("parrilla_drafts")
+            .select("brand_id")
+            .eq("id", draft_id)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning("resolve_logo_draft_query_failed", error=str(exc))
+        return None
+
+    if not draft_result.data:
+        return None
+
+    brand_id = draft_result.data[0].get("brand_id")
+    if not brand_id:
+        return None
+
+    try:
+        result = (
+            client.table("brands")
+            .select("logo_url")
+            .eq("id", brand_id)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning("resolve_logo_brand_query_failed", brand_id=brand_id, error=str(exc))
+        return None
 
     if result.data and result.data[0].get("logo_url"):
         logger.info("logo_resolved_from_db", brand_id=brand_id)
@@ -279,12 +331,23 @@ class PostPipeline:
             # Step 1: Generate base image with Flux
             # ----------------------------------------------------------
             if product_image_urls:
+                logger.info(
+                    "flux_kontext_with_reference",
+                    post_id=post_id,
+                    reference_url=product_image_urls[0][:80],
+                    aspect_ratio=aspect_ratio,
+                )
                 flux_image_url = await generate_image_with_reference(
                     prompt=prompt_en,
                     reference_image_url=product_image_urls[0],
                     aspect_ratio=aspect_ratio,
                 )
             else:
+                logger.info(
+                    "flux_pro_text_to_image",
+                    post_id=post_id,
+                    aspect_ratio=aspect_ratio,
+                )
                 flux_image_url = await generate_image_with_reference(
                     prompt=prompt_en,
                     reference_image_url="",
