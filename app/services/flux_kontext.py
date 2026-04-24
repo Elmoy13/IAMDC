@@ -13,21 +13,26 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-FAL_URL = "https://fal.run/fal-ai/flux-pro/kontext"
+FAL_KONTEXT_URL = "https://fal.run/fal-ai/flux-pro/kontext"
+FAL_FLUX_PRO_URL = "https://fal.run/fal-ai/flux-pro/v1.1"
 FAL_FLUX2_EDIT_URL = "https://fal.run/fal-ai/flux-2-pro/edit"
 
 
 async def generate_image_with_reference(
     prompt: str,
-    reference_image_url: str,
+    reference_image_url: str = "",
     aspect_ratio: str = "1:1",
 ) -> str:
-    """Generate an image using Flux Kontext Pro with a reference image.
+    """Generate an image using Flux via fal.ai.
+
+    If ``reference_image_url`` is provided, uses Flux Kontext Pro (image-to-image).
+    Otherwise, uses Flux Pro 1.1 (text-to-image).
 
     Args:
         prompt: Scene description for product placement.
         reference_image_url: Public URL or data URL of the reference image.
-        aspect_ratio: Aspect ratio for the generated image ("1:1", "9:16", "16:9", "3:4", "4:3").
+                             If empty/None, text-to-image is used.
+        aspect_ratio: Aspect ratio ("1:1", "9:16", "16:9", "3:4", "4:3").
 
     Returns:
         URL of the generated image.
@@ -37,18 +42,28 @@ async def generate_image_with_reference(
         "Content-Type": "application/json",
     }
 
+    use_kontext = bool(reference_image_url)
+    url = FAL_KONTEXT_URL if use_kontext else FAL_FLUX_PRO_URL
+
     payload = {
         "prompt": prompt,
-        "image_url": reference_image_url,
         "aspect_ratio": aspect_ratio,
         "num_images": 1,
         "safety_tolerance": 5,
         "output_format": "png",
     }
 
+    if use_kontext:
+        payload["image_url"] = reference_image_url
+
     async with httpx.AsyncClient(timeout=300) as client:
-        logger.info("flux_submit", prompt=prompt[:80], aspect_ratio=aspect_ratio)
-        response = await client.post(FAL_URL, json=payload, headers=headers)
+        logger.info(
+            "flux_submit",
+            model="kontext" if use_kontext else "flux-pro-1.1",
+            prompt=prompt[:80],
+            aspect_ratio=aspect_ratio,
+        )
+        response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
         logger.info("flux_response", keys=list(data.keys()))

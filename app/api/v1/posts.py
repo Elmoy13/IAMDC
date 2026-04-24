@@ -6,7 +6,6 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from app.core.exceptions import ImageGenerationError
 from app.core.logging import get_logger
 from app.middleware.auth import get_current_user, get_user_agency
-from app.providers import vertex_imagen
 from app.schemas.post import (
     ApproveAndGenerateImageResponse,
     BatchRenderRequest,
@@ -34,7 +33,6 @@ from app.schemas.post import (
 )
 from app.services import content_generator, template_generator, template_renderer
 from app.services import supabase_client
-from app.services.image_service import enrich_image_prompt
 from app.services.flux_kontext import (
     generate_image_with_reference,
     download_image_as_base64,
@@ -76,14 +74,16 @@ async def _render_single(
     image_prompt: str,
     style_description: str,
 ) -> tuple[str, str]:
-    """Run the full Vertex AI → Nova Pro → Playwright pipeline.
+    """Run the full Flux → Nova Pro → Playwright pipeline.
 
     Returns:
         (rendered_post_data_url, html_content)
     """
-    background_b64 = await vertex_imagen.generate_image(
-        enrich_image_prompt(image_prompt)
+    flux_image_url = await generate_image_with_reference(
+        prompt=image_prompt,
+        reference_image_url="",
     )
+    background_b64 = await download_image_as_base64(flux_image_url)
 
     html_content = await template_generator.generate_post_template(
         format=format,
@@ -113,7 +113,7 @@ async def render_post(
 ) -> RenderPostResponse:
     """DEPRECATED — Use POST /posts/generate instead.
 
-    Generate a background with Vertex AI, build a post template with Claude,
+    Generate a background with Flux (fal.ai), build a post template with Claude,
     and render it to PNG with Playwright."""
     logger.warning("deprecated_endpoint_called", endpoint="/posts/render")
 
@@ -170,7 +170,7 @@ async def render_batch(
     """DEPRECATED — Use POST /posts/generate instead.
 
     Render multiple posts for a content grid sequentially.
-    Each post is processed one at a time to avoid overloading Vertex AI.
+    Each post is processed one at a time to avoid overloading fal.ai.
     Failures are captured per-item and do not abort the whole batch.
     """
     logger.warning("deprecated_endpoint_called", endpoint="/posts/render-batch-legacy")
@@ -247,7 +247,7 @@ async def smart_render_batch(
 
     Full intelligent pipeline:
     1. One LLM call generates copy + image prompts for ALL posts from the brief.
-    2. For each post: Vertex AI → background PNG → Nova Pro → HTML → Playwright → PNG.
+    2. For each post: Flux (fal.ai) → background PNG → Nova Pro → HTML → Playwright → PNG.
     """
     logger.warning("deprecated_endpoint_called", endpoint="/posts/render-batch")
     num_posts = len(payload.posts_config)
@@ -362,10 +362,13 @@ async def smart_render_batch(
                 else:
                     background_b64 = await download_image_as_base64(flux_image_url)
             else:
-                # --- Vertex AI fallback (text-to-image, no product photos) ---
-                background_b64 = await vertex_imagen.generate_image(
-                    enrich_image_prompt(content["image_prompt"])
+                # --- Flux text-to-image (no product photos) ---
+                flux_url = await generate_image_with_reference(
+                    prompt=content["image_prompt"],
+                    reference_image_url="",
+                    aspect_ratio=_FORMAT_ASPECT_RATIO.get(config.format, "1:1"),
                 )
+                background_b64 = await download_image_as_base64(flux_url)
 
             # Skip HTML logo if it's already in the AI-generated image
             template_brand = dict(brand_dict)

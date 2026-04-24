@@ -17,8 +17,6 @@ from app.services.flux_kontext import (
 )
 from app.services.image_storage import upload_image_to_fal
 from app.services.prompt_optimizer import optimize_image_prompt
-from app.providers import vertex_imagen
-from app.services.image_service import enrich_image_prompt
 
 logger = get_logger(__name__)
 
@@ -158,7 +156,7 @@ class PostPipeline:
 
         1. Load post from DB (must be status=success, image_status=pending)
         2. Mark image_status='generating'
-        3. Flux Kontext if product_images, else Vertex fallback
+        3. Flux Kontext Pro (fal.ai) for base image
         4. Nano Banana overlay if requested
         5. Upload to Supabase Storage
         6. Update post: image_status='ready', rendered_image_url=url
@@ -190,10 +188,9 @@ class PostPipeline:
                     url = await upload_image_to_fal(img_b64)
                     product_image_urls.append(url)
 
-            use_flux = bool(product_image_urls)
             base_image_url_for_version = ""
 
-            if use_flux:
+            if product_image_urls:
                 product_url = product_image_urls[0]
 
                 # Flux Kontext Pro — product in scene
@@ -233,9 +230,18 @@ class PostPipeline:
                 else:
                     image_b64 = base_b64
             else:
-                image_b64 = await vertex_imagen.generate_image(
-                    enrich_image_prompt(prompt_en)
+                # No product images — use Flux Kontext Pro text-to-image
+                flux_image_url = await generate_image_with_reference(
+                    prompt=prompt_en,
+                    reference_image_url="",
+                    aspect_ratio=aspect_ratio,
                 )
+                base_b64 = await download_image_as_base64(flux_image_url)
+                base_filename = f"{job_id}/{post_id}_base.png"
+                base_image_url_for_version = await supabase_client.upload_image_to_storage(
+                    base_b64, base_filename,
+                )
+                image_b64 = base_b64
 
             # Upload final image to Supabase Storage
             filename = f"{job_id}/{post_id}.png"

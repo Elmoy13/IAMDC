@@ -122,7 +122,7 @@ async def render_post(
         template_id:          One of the template IDs (e.g. "bold-center").
         format:               Target social format key (e.g. "instagram_feed").
         background_image_b64: Base64-encoded PNG (raw, without the data: prefix)
-                              returned by Vertex AI Imagen.
+                              returned by the image provider.
         brand:                Dict with keys logo_b64, primary_color,
                               secondary_color, font_family.
         copy:                 Dict with keys headline, body, cta.

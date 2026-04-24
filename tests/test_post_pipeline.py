@@ -166,12 +166,20 @@ async def test_generate_image_for_post_updates_image_status(monkeypatch):
         mock_update_fields,
     )
     monkeypatch.setattr(
-        "app.services.post_pipeline.vertex_imagen.generate_image",
-        AsyncMock(return_value="base64imgdata"),
+        "app.services.post_pipeline.generate_image_with_reference",
+        AsyncMock(return_value="https://fal.run/result/abc123.png"),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.download_image_as_base64",
+        AsyncMock(return_value="data:image/png;base64,base64imgdata"),
     )
     monkeypatch.setattr(
         "app.services.post_pipeline.supabase_client.upload_image_to_storage",
         AsyncMock(return_value="https://storage.example.com/p1.png"),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.optimize_image_prompt",
+        AsyncMock(return_value="optimized prompt en"),
     )
 
     await pipeline.generate_image_for_post(
@@ -377,17 +385,21 @@ async def test_generate_image_for_post_uses_optimized_prompt(monkeypatch):
         mock_optimize,
     )
 
-    # Track what prompt Vertex receives
-    vertex_prompt_received = None
+    # Track what prompt Flux receives
+    flux_prompt_received = None
 
-    async def mock_vertex(prompt):
-        nonlocal vertex_prompt_received
-        vertex_prompt_received = prompt
-        return "base64imgdata"
+    async def mock_flux(prompt, reference_image_url="", aspect_ratio="1:1"):
+        nonlocal flux_prompt_received
+        flux_prompt_received = prompt
+        return "https://fal.run/result/abc.png"
 
     monkeypatch.setattr(
-        "app.services.post_pipeline.vertex_imagen.generate_image",
-        mock_vertex,
+        "app.services.post_pipeline.generate_image_with_reference",
+        mock_flux,
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.download_image_as_base64",
+        AsyncMock(return_value="data:image/png;base64,base64imgdata"),
     )
     monkeypatch.setattr(
         "app.services.post_pipeline.supabase_client.upload_image_to_storage",
@@ -400,8 +412,8 @@ async def test_generate_image_for_post_uses_optimized_prompt(monkeypatch):
         product_images=None,
     )
 
-    # Vertex should have received the EN prompt (via enrich_image_prompt)
-    assert optimized_en in vertex_prompt_received
+    # Flux should have received the EN prompt
+    assert optimized_en in flux_prompt_received
 
     # image_prompt_en should be persisted
     assert field_updates["p1"]["image_prompt_en"] == optimized_en
@@ -549,3 +561,160 @@ async def test_job_fails_when_all_images_fail(monkeypatch):
 def test_image_semaphore_limit_is_five():
     """Semaphore should be 5 for fal.ai parallelism."""
     assert IMAGE_SEMAPHORE_LIMIT == 5
+
+
+# --------------------------------------------------------------------------
+# 10. No code path calls Vertex AI
+# --------------------------------------------------------------------------
+
+
+def test_pipeline_no_vertex_imports():
+    """post_pipeline module must NOT import vertex_imagen at all."""
+    import app.services.post_pipeline as mod
+    source = open(mod.__file__).read()
+    assert "vertex_imagen" not in source
+    assert "vertex" not in source.lower()
+
+
+def test_no_vertex_provider_file():
+    """The vertex_imagen provider file must not exist."""
+    import pathlib
+    vertex_file = pathlib.Path(__file__).parent.parent / "app" / "providers" / "vertex_imagen.py"
+    assert not vertex_file.exists(), f"Dead file still exists: {vertex_file}"
+
+
+# --------------------------------------------------------------------------
+# 11. Flux Kontext Pro text-to-image (no product reference)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flux_generates_without_product_reference(monkeypatch):
+    """When no product_images are provided, the pipeline should still
+    use Flux (text-to-image) instead of falling back to Vertex."""
+    pipeline = PostPipeline()
+    post = _mock_post("p1", approval_status="approved")
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.get_post",
+        AsyncMock(return_value=post),
+    )
+
+    field_updates = {}
+
+    async def mock_update_fields(post_id, fields):
+        field_updates.setdefault(post_id, {}).update(fields)
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.update_post_fields",
+        mock_update_fields,
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.optimize_image_prompt",
+        AsyncMock(return_value="optimized prompt"),
+    )
+
+    flux_calls = []
+
+    async def mock_flux(prompt, reference_image_url="", aspect_ratio="1:1"):
+        flux_calls.append({
+            "prompt": prompt,
+            "reference_image_url": reference_image_url,
+        })
+        return "https://fal.run/result/no-ref.png"
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.generate_image_with_reference",
+        mock_flux,
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.download_image_as_base64",
+        AsyncMock(return_value="data:image/png;base64,imgdata"),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.upload_image_to_storage",
+        AsyncMock(return_value="https://storage.example.com/p1.png"),
+    )
+
+    await pipeline.generate_image_for_post(
+        post_id="p1",
+        brand={"primary_color": "#000"},
+        product_images=None,
+    )
+
+    # Flux was called with empty reference (text-to-image mode)
+    assert len(flux_calls) == 1
+    assert flux_calls[0]["reference_image_url"] == ""
+    assert field_updates["p1"]["image_status"] == "ready"
+
+
+# --------------------------------------------------------------------------
+# 12. Nano Banana adds logo overlay
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_nano_banana_adds_logo_overlay(monkeypatch):
+    """When include_logo_in_image=True, nano_banana.enhance_post_image
+    should be called after Flux."""
+    pipeline = PostPipeline()
+    post = _mock_post("p1", approval_status="approved")
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.get_post",
+        AsyncMock(return_value=post),
+    )
+
+    field_updates = {}
+
+    async def mock_update_fields(post_id, fields):
+        field_updates.setdefault(post_id, {}).update(fields)
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.update_post_fields",
+        mock_update_fields,
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.optimize_image_prompt",
+        AsyncMock(return_value="optimized prompt"),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.generate_image_with_reference",
+        AsyncMock(return_value="https://fal.run/result/flux.png"),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.upload_image_to_fal",
+        AsyncMock(return_value="https://fal.run/upload/product.png"),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.download_image_as_base64",
+        AsyncMock(return_value="data:image/png;base64,imgdata"),
+    )
+    monkeypatch.setattr(
+        "app.services.post_pipeline.supabase_client.upload_image_to_storage",
+        AsyncMock(return_value="https://storage.example.com/p1.png"),
+    )
+
+    nano_calls = []
+
+    async def mock_nano(**kwargs):
+        nano_calls.append(kwargs)
+        return "https://fal.run/result/nano.png"
+
+    monkeypatch.setattr(
+        "app.services.post_pipeline.nano_banana.enhance_post_image",
+        mock_nano,
+    )
+
+    await pipeline.generate_image_for_post(
+        post_id="p1",
+        brand={"primary_color": "#000", "logo_b64": "data:image/png;base64,logo"},
+        product_images=["data:image/png;base64,product"],
+        include_logo_in_image=True,
+        include_text_in_image=False,
+    )
+
+    # Nano Banana should have been called
+    assert len(nano_calls) == 1
+    assert nano_calls[0]["include_logo"] is True
+    assert field_updates["p1"]["image_status"] == "ready"

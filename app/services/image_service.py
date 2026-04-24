@@ -4,15 +4,15 @@ import io
 from PIL import Image
 
 from app.core.logging import get_logger
-from app.providers import vertex_imagen
+from app.services.flux_kontext import generate_image_with_reference, download_image_as_base64
 
 logger = get_logger(__name__)
 
 
 def enrich_image_prompt(prompt: str) -> str:
-    """Append strict no-text constraints to any Vertex AI image prompt.
+    """Append strict no-text constraints to image prompts.
 
-    Vertex AI sometimes generates fake text/logos/brand names on objects.
+    AI image models sometimes generate fake text/logos/brand names on objects.
     These suffixes suppress that behaviour reliably.
     """
     suffix = (
@@ -26,7 +26,7 @@ def enrich_image_prompt(prompt: str) -> str:
 
 
 async def generate_image_with_logo(prompt: str, context_image_b64: str) -> str:
-    """Generate an image with Vertex AI Imagen 3, then composite the user's logo.
+    """Generate an image with Flux (fal.ai), then composite the user's logo.
 
     Args:
         prompt: Text prompt for image generation (should exclude text/logos).
@@ -35,15 +35,23 @@ async def generate_image_with_logo(prompt: str, context_image_b64: str) -> str:
     Returns:
         Data URL string: ``data:image/png;base64,...``
     """
-    # 1. Generate the base image with Imagen 3
+    # 1. Generate the base image with Flux Pro
     enhanced_prompt = (
         f"{prompt}. "
         "The image must not contain any text, watermarks, or logos."
     )
-    generated_b64 = await vertex_imagen.generate_image(enhanced_prompt)
+    flux_url = await generate_image_with_reference(
+        prompt=enhanced_prompt,
+        reference_image_url="",
+    )
 
-    # 2. Decode images
+    # Download and decode
+    data_url = await download_image_as_base64(flux_url)
+    # data_url is "data:<mime>;base64,<b64>" — extract raw bytes
+    generated_b64 = data_url.split(",", 1)[1]
     generated_bytes = base64.b64decode(generated_b64)
+
+    # 2. Decode logo
     logo_bytes = base64.b64decode(context_image_b64)
 
     base_image = Image.open(io.BytesIO(generated_bytes)).convert("RGBA")

@@ -8,7 +8,6 @@ pydantic-settings==2.7.1
 httpx==0.28.1
 pillow==11.1.0
 python-multipart==0.0.20
-google-auth==2.37.0
 boto3==1.36.2
 structlog==24.4.0
 requests>=2.31.0

@@ -56,7 +56,7 @@ class RenderPostRequest(BaseModel):
     )
     brand: BrandInput
     post_copy: CopyInput = Field(alias="copy")
-    image_prompt: str = Field(description="Prompt for Vertex AI background image generation")
+    image_prompt: str = Field(description="Prompt for AI background image generation")
     style_description: str = Field(
         default="profesional, moderno, limpio",
         description='Aesthetic style hint for Claude, e.g. "elegante, premium, minimalista"',

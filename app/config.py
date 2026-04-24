@@ -53,12 +53,7 @@ class Settings(BaseSettings):
     agent_director_model: str = "zai.glm-5"                   # creative director vision
     agent_fallback_chain: str = "zai.glm-5,zai.glm-4.7,us.amazon.nova-pro-v1:0"
 
-    # ── Google Cloud / Vertex AI ─────────────────────────
-    gcp_project_id: str = ""
-    gcp_location: str = "us-central1"
-    gcp_service_account_json: str = ""
-
-    # ── fal.ai (Flux Kontext Pro) ────────────────────────
+    # ── fal.ai (Flux Kontext Pro + Nano Banana) ────────────
     fal_key: str = ""
     api_base_url: str = "http://localhost:8000"
 
